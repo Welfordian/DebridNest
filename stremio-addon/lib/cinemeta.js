@@ -1,4 +1,6 @@
 const CINEMETA_BASE = 'https://v3-cinemeta.strem.io'
+const CINEMETA_CACHE_TTL_MS = Number(process.env.CINEMETA_CACHE_TTL_MS || 6 * 60 * 60 * 1000)
+const metaCache = new Map()
 
 function parseStremioId(id) {
   if (!id || !id.startsWith('tt')) {
@@ -16,15 +18,40 @@ function parseStremioId(id) {
 }
 
 async function fetchMeta(type, imdbId) {
+  const cacheKey = `${type}:${imdbId}`
+  if (CINEMETA_CACHE_TTL_MS > 0) {
+    const cached = metaCache.get(cacheKey)
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.promise
+    }
+    if (cached) {
+      metaCache.delete(cacheKey)
+    }
+  }
+
   const path = type === 'series'
     ? `/meta/series/${imdbId}.json`
     : `/meta/movie/${imdbId}.json`
-  const res = await fetch(`${CINEMETA_BASE}${path}`)
-  if (!res.ok) {
-    throw new Error(`Cinemeta ${res.status}`)
+  const promise = fetch(`${CINEMETA_BASE}${path}`)
+    .then(async (res) => {
+      if (!res.ok) {
+        throw new Error(`Cinemeta ${res.status}`)
+      }
+      const data = await res.json()
+      return data.meta
+    })
+    .catch((err) => {
+      metaCache.delete(cacheKey)
+      throw err
+    })
+
+  if (CINEMETA_CACHE_TTL_MS > 0) {
+    metaCache.set(cacheKey, {
+      promise,
+      expiresAt: Date.now() + CINEMETA_CACHE_TTL_MS,
+    })
   }
-  const data = await res.json()
-  return data.meta
+  return promise
 }
 
 async function resolveMetadata(type, id) {

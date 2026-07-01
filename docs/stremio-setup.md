@@ -32,12 +32,12 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9117
 
 ## 2. Configure Jackett (first time)
 
-On first `docker compose --profile stremio up`, a **jackett-setup** container automatically adds public indexers (`limetorrents`, `therarbg`, `eztv`, `knaben`, `magnetz`).
+On first `docker compose --profile stremio up`, a **jackett-setup** container automatically adds public indexers (`1337x`, `knaben`, `limetorrents`, `magnetz`, `nyaasi`, `rutracker-ru`, `thepiratebay`, `therarbg`, `yts`).
 
 To customize:
 
 ```
-JACKETT_INDEXERS=limetorrents,therarbg,eztv
+JACKETT_INDEXERS=1337x,knaben,limetorrents,magnetz,nyaasi,rutracker-ru,thepiratebay,therarbg,yts
 ```
 
 You can also add more indexers manually:

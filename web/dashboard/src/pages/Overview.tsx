@@ -1,6 +1,8 @@
-import { useCallback } from 'react';
+import { ReactNode, useCallback } from 'react';
 import { fetchStats, joinUrl } from '../api';
 import type { Tab } from '../App';
+import Icon from '../components/Icon';
+import { TopBarActions, TopBarMeta } from '../components/TopBar';
 import { usePolling } from '../hooks/usePolling';
 import {
   formatBytes,
@@ -8,34 +10,77 @@ import {
   formatRelativeTime,
   formatSpeed,
 } from '../lib/format';
-
-function statusTotal(counts: Record<string, number> | undefined, keys: string[]): number {
-  if (!counts) return 0;
-  return keys.reduce((sum, key) => sum + (counts[key] ?? 0), 0);
-}
+import { lifecycleCount } from '../lib/torrentLifecycle';
 
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="config-row">
-      <span className="config-label">{label}</span>
-      <span className="config-value">{value}</span>
+      <div className="config-row-text">
+        <span className="config-label">{label}</span>
+        <span className="config-value">{value}</span>
+      </div>
     </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  detail,
+  hero = false,
+  accessory,
+  children,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  hero?: boolean;
+  accessory?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <article className={hero ? 'card card-hero stat-card hero-card' : 'card stat-card'}>
+      <div className="stat-card-top">
+        <span className="stat-label">{label}</span>
+        {accessory}
+      </div>
+      <p className="stat-value">{value}</p>
+      {children}
+      {detail && <p className="stat-detail">{detail}</p>}
+    </article>
   );
 }
 
 function QuickLink({
   label,
   description,
+  icon,
   onClick,
   href,
   external,
 }: {
   label: string;
   description: string;
+  icon: string;
   onClick?: () => void;
   href?: string;
   external?: boolean;
 }) {
+  const inner = (
+    <>
+      <span className="quick-link-icon">
+        <Icon name={icon} size={18} />
+      </span>
+      <span className="quick-link-text">
+        <span className="quick-link-label">
+          {label}
+          {external && <Icon name="external-link" size={12} />}
+        </span>
+        <span className="quick-link-desc">{description}</span>
+      </span>
+    </>
+  );
+
   if (href) {
     return (
       <a
@@ -44,16 +89,14 @@ function QuickLink({
         target={external ? '_blank' : undefined}
         rel={external ? 'noreferrer' : undefined}
       >
-        <span className="quick-link-label">{label}</span>
-        <span className="muted quick-link-desc">{description}</span>
+        {inner}
       </a>
     );
   }
 
   return (
     <button type="button" className="quick-link" onClick={onClick}>
-      <span className="quick-link-label">{label}</span>
-      <span className="muted quick-link-desc">{description}</span>
+      {inner}
     </button>
   );
 }
@@ -81,99 +124,86 @@ export default function Overview({ onNavigate }: { onNavigate: (tab: Tab) => voi
 
   const hasQuota = stats.diskQuota > 0;
   const usedPct = hasQuota ? Math.min(100, (stats.diskUsed / stats.diskQuota) * 100) : 0;
-  const completed = statusTotal(stats.statusCounts, ['downloaded']);
-  const downloading = statusTotal(stats.statusCounts, [
-    'downloading',
-    'queued',
-    'waiting_files_selection',
-    'magnet_conversion',
-  ]);
-  const failed = statusTotal(stats.statusCounts, ['error', 'dead']);
+  const quotaTone = usedPct >= 95 ? ' tone-danger' : usedPct >= 80 ? ' tone-streamable' : '';
+  const active = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'active');
+  const ready = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'completed');
+  const failed = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'failed');
+  const other = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'other');
 
   const base = stats.publicUrl.replace(/\/+$/, '');
 
   return (
-    <div className="overview">
-      <div className="page-toolbar">
-        <p className="muted toolbar-meta">
-          {updatedAt ? `Updated ${formatRelativeTime(updatedAt)}` : 'Live stats'}
-        </p>
+    <div className="page">
+      <TopBarMeta>
+        {updatedAt ? `updated ${formatRelativeTime(updatedAt)}` : 'Live stats'}
+      </TopBarMeta>
+      <TopBarActions>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
+          <Icon name="rotate-cw" size={14} />
           Refresh
         </button>
-      </div>
+      </TopBarActions>
 
       <section className="hero-grid">
-        <article className="card hero-card">
-          <div className="card-heading">
-            <h2>Storage</h2>
-            {!hasQuota && <span className="pill pill-muted">Unlimited</span>}
-          </div>
-          <p className="hero-value">{formatBytes(stats.diskUsed)}</p>
+        <StatCard
+          hero
+          label="Storage"
+          value={formatBytes(stats.diskUsed)}
+          detail={formatQuotaLabel(stats.diskUsed, stats.diskQuota, stats.diskQuotaGb)}
+          accessory={
+            hasQuota ? (
+              <span className={usedPct >= 80 ? 'pill pill-warning' : 'pill pill-accent'}>
+                {usedPct.toFixed(0)}% of quota
+              </span>
+            ) : (
+              <span className="pill pill-muted">Unlimited</span>
+            )
+          }
+        >
           <div className="disk-bar" aria-hidden={!hasQuota}>
             <div
-              className="disk-bar-fill"
+              className={`disk-bar-fill${quotaTone}`}
               style={{ width: hasQuota ? `${usedPct}%` : '0%' }}
             />
           </div>
-          <p className="stat-detail">{formatQuotaLabel(stats.diskUsed, stats.diskQuota, stats.diskQuotaGb)}</p>
-        </article>
+        </StatCard>
 
-        <article className="card hero-card">
-          <div className="card-heading">
-            <h2>Download speed</h2>
-            <span className="pill pill-live">Live</span>
-          </div>
-          <p className="hero-value">{formatSpeed(stats.downloadSpeed)}</p>
-          <div className="disk-bar disk-bar-spacer" aria-hidden="true">
-            <div className="disk-bar-fill" style={{ width: '0%' }} />
-          </div>
-          <p className="stat-detail muted">
-            {stats.activeCount} active · {stats.torrentCount} total torrents
-          </p>
-        </article>
+        <StatCard
+          hero
+          label="Download speed"
+          value={formatSpeed(stats.downloadSpeed)}
+          detail={`${active} active · ${stats.torrentCount} total torrents`}
+          accessory={<span className="pill pill-live">Live</span>}
+        />
       </section>
 
       <section className="stat-grid">
-        <article className="card stat-card">
-          <h3>Active</h3>
-          <p className="stat-value">{stats.activeCount}</p>
-          <p className="stat-detail muted">In progress or queued</p>
-        </article>
-        <article className="card stat-card">
-          <h3>Downloading</h3>
-          <p className="stat-value">{downloading}</p>
-          <p className="stat-detail muted">Including selection stage</p>
-        </article>
-        <article className="card stat-card">
-          <h3>Completed</h3>
-          <p className="stat-value">{completed}</p>
-          <p className="stat-detail muted">Ready to stream</p>
-        </article>
-        <article className="card stat-card">
-          <h3>Failed</h3>
-          <p className="stat-value">{failed}</p>
-          <p className="stat-detail muted">Error or dead</p>
-        </article>
+        <StatCard label="Active" value={String(active)} detail="In progress or queued" />
+        <StatCard label="Ready" value={String(ready)} detail="Completed and link-visible" />
+        <StatCard label="Failed" value={String(failed)} detail="Errors, dead torrents, or magnet failures" />
+        <StatCard label="Other" value={String(other)} detail="Unclassified lifecycle states" />
       </section>
 
-      <section className="card config-card">
+      <section className="card">
         <div className="card-heading">
           <h2>Quick links</h2>
         </div>
         <div className="quick-links">
           <QuickLink
+            icon="library"
             label="Library"
             description="Completed torrents, WebDAV paths, stream links"
             onClick={() => onNavigate('library')}
           />
           <QuickLink
+            icon="settings-2"
             label="Settings"
-            description="Service URLs, maintenance, purge"
+            description="Limits, notifications, maintenance"
             onClick={() => onNavigate('settings')}
           />
           {stats.webdavEnabled && base && (
             <QuickLink
+              icon="hard-drive"
               label="WebDAV"
               description="Browse completed files"
               href={joinUrl(base, '/webdav/')}
@@ -182,23 +212,17 @@ export default function Overview({ onNavigate }: { onNavigate: (tab: Tab) => voi
           )}
           {stats.metricsEnabled && base && (
             <QuickLink
+              icon="activity"
               label="Metrics"
               description="Prometheus /metrics endpoint"
               href={joinUrl(base, '/metrics')}
               external
             />
           )}
-          {base && (
-            <QuickLink
-              label="Dashboard"
-              description="This control panel"
-              href={joinUrl(base, '/dashboard/')}
-            />
-          )}
         </div>
       </section>
 
-      <section className="card config-card">
+      <section className="card">
         <div className="card-heading">
           <h2>Configuration</h2>
         </div>

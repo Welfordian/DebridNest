@@ -102,18 +102,19 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{
-		"diskUsed":       s.DiskUsed,
-		"diskQuota":      s.DiskQuota,
-		"torrentCount":   s.TorrentCount,
-		"activeCount":    s.ActiveCount,
-		"downloadSpeed":  s.DownloadSpeed,
-		"statusCounts":   s.StatusCounts,
-		"retentionDays":  h.effectiveRetentionDays(),
-		"publicUrl":      h.cfg.PublicURL,
-		"rateLimitMbps":  h.effectiveRateLimitMbps(),
-		"diskQuotaGb":    h.effectiveDiskQuotaGB(),
-		"webdavEnabled":  h.cfg.WebDAVEnabled,
-		"metricsEnabled": h.cfg.MetricsEnabled,
+		"diskUsed":        s.DiskUsed,
+		"diskQuota":       s.DiskQuota,
+		"torrentCount":    s.TorrentCount,
+		"activeCount":     s.ActiveCount,
+		"downloadSpeed":   s.DownloadSpeed,
+		"statusCounts":    s.StatusCounts,
+		"lifecycleCounts": s.LifecycleCounts,
+		"retentionDays":   h.effectiveRetentionDays(),
+		"publicUrl":       h.cfg.PublicURL,
+		"rateLimitMbps":   h.effectiveRateLimitMbps(),
+		"diskQuotaGb":     h.effectiveDiskQuotaGB(),
+		"webdavEnabled":   h.cfg.WebDAVEnabled,
+		"metricsEnabled":  h.cfg.MetricsEnabled,
 	}
 	for k, v := range h.configExtras() {
 		resp[k] = v
@@ -141,16 +142,17 @@ func (h *Handler) listTorrents(w http.ResponseWriter, r *http.Request) {
 			size = rec.Bytes
 		}
 		entry := map[string]any{
-			"id":       rec.ID,
-			"name":     rec.Name,
-			"hash":     rec.InfoHash,
-			"status":   rec.Status,
-			"progress": rec.Progress,
-			"bytes":    rec.Bytes,
-			"size":     size,
-			"speed":    rec.Speed,
-			"seeders":  rec.Seeders,
-			"added":    rec.AddedAt,
+			"id":        rec.ID,
+			"name":      rec.Name,
+			"hash":      rec.InfoHash,
+			"status":    rec.Status,
+			"lifecycle": torrentmgr.LifecycleViewForRecord(rec, h.cfg.MinStreamBytes()),
+			"progress":  rec.Progress,
+			"bytes":     rec.Bytes,
+			"size":      size,
+			"speed":     rec.Speed,
+			"seeders":   rec.Seeders,
+			"added":     rec.AddedAt,
 		}
 		if rec.EndedAt != nil {
 			entry["ended"] = rec.EndedAt
@@ -181,19 +183,25 @@ func (h *Handler) getTorrent(w http.ResponseWriter, r *http.Request) {
 			"bytes":           f.Bytes,
 			"selected":        f.Selected,
 			"downloadedBytes": f.DownloadedBytes,
+			"streamableBytes": f.StreamableBytes,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":       rec.ID,
-		"name":     rec.Name,
-		"hash":     rec.InfoHash,
-		"status":   rec.Status,
-		"progress": rec.Progress,
-		"bytes":    rec.Bytes,
-		"size":     size,
-		"files":    files,
-		"links":    rec.Links,
+		"id":        rec.ID,
+		"name":      rec.Name,
+		"hash":      rec.InfoHash,
+		"status":    rec.Status,
+		"lifecycle": torrentmgr.LifecycleViewForRecord(rec, h.cfg.MinStreamBytes()),
+		"progress":  rec.Progress,
+		"bytes":     rec.Bytes,
+		"size":      size,
+		"speed":     rec.Speed,
+		"seeders":   rec.Seeders,
+		"added":     rec.AddedAt,
+		"ended":     rec.EndedAt,
+		"files":     files,
+		"links":     rec.Links,
 	})
 }
 
@@ -219,7 +227,7 @@ func (h *Handler) addMagnet(w http.ResponseWriter, r *http.Request) {
 		"torrentId": rec.ID,
 		"name":      rec.Name,
 	})
-	writeJSON(w, http.StatusCreated, torrentSummary(rec))
+	writeJSON(w, http.StatusCreated, torrentSummary(h.cfg, rec))
 }
 
 func (h *Handler) uploadTorrent(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +262,7 @@ func (h *Handler) uploadTorrent(w http.ResponseWriter, r *http.Request) {
 		"torrentId": rec.ID,
 		"name":      rec.Name,
 	})
-	writeJSON(w, http.StatusCreated, torrentSummary(rec))
+	writeJSON(w, http.StatusCreated, torrentSummary(h.cfg, rec))
 }
 
 func (h *Handler) purgeTorrents(w http.ResponseWriter, r *http.Request) {
@@ -385,19 +393,20 @@ func (h *Handler) configExtras() map[string]any {
 	}
 }
 
-func torrentSummary(rec *storage.TorrentRecord) map[string]any {
+func torrentSummary(cfg config.Config, rec *storage.TorrentRecord) map[string]any {
 	size := rec.OriginalBytes
 	if size <= 0 {
 		size = rec.Bytes
 	}
 	return map[string]any{
-		"id":       rec.ID,
-		"name":     rec.Name,
-		"hash":     rec.InfoHash,
-		"status":   rec.Status,
-		"progress": rec.Progress,
-		"bytes":    rec.Bytes,
-		"size":     size,
+		"id":        rec.ID,
+		"name":      rec.Name,
+		"hash":      rec.InfoHash,
+		"status":    rec.Status,
+		"lifecycle": torrentmgr.LifecycleViewForRecord(rec, cfg.MinStreamBytes()),
+		"progress":  rec.Progress,
+		"bytes":     rec.Bytes,
+		"size":      size,
 	}
 }
 

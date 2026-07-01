@@ -8,7 +8,9 @@ import {
   type DashboardUser,
 } from '../api';
 import CopyButton from '../components/CopyButton';
+import Icon from '../components/Icon';
 import Modal from '../components/Modal';
+import { TopBarActions, TopBarMeta } from '../components/TopBar';
 import { useToast } from '../components/Toast';
 import { usePolling } from '../hooks/usePolling';
 import { formatRelativeTime } from '../lib/format';
@@ -26,12 +28,12 @@ function TokenModal({
 }) {
   return (
     <Modal title={title} onClose={onClose}>
-      <p className="muted section-desc">
+      <p className="section-desc">
         Copy the token for <strong>{userName}</strong> now — it will not be shown again.
       </p>
       <code className="token-display">{token}</code>
       <div className="modal-actions">
-        <CopyButton value={token} label="Copy token" />
+        <CopyButton value={token} label="Copy token" className="btn btn-secondary" />
         <button type="button" className="btn btn-primary" onClick={onClose}>
           Done
         </button>
@@ -49,7 +51,6 @@ function CreateUserModal({
 }) {
   const { toast } = useToast();
   const [name, setName] = useState('');
-  const [role, setRole] = useState('user');
   const [admin, setAdmin] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -63,7 +64,7 @@ function CreateUserModal({
 
     setBusy(true);
     try {
-      const result = await createUser({ name: trimmed, role: admin ? 'admin' : role || 'user' });
+      const result = await createUser({ name: trimmed, role: admin ? 'admin' : 'user' });
       onCreated(result);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to create user', 'error');
@@ -86,33 +87,15 @@ function CreateUserModal({
             autoFocus
           />
         </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label htmlFor="user-role">Role</label>
-            <input
-              id="user-role"
-              className="input"
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              placeholder="user"
-            />
-          </div>
-          <div className="form-group toggle-group">
-            <label className="toggle-label">
-              <input
-                type="checkbox"
-                checked={admin}
-                onChange={(e) => setAdmin(e.target.checked)}
-              />
-              <span>Admin access</span>
-            </label>
-          </div>
-        </div>
+        <label className="toggle-label" style={{ marginTop: 14 }}>
+          <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />
+          <span>Admin access</span>
+        </label>
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
+          <button type="submit" className="btn btn-primary" disabled={busy || !name.trim()}>
             {busy ? 'Creating…' : 'Create user'}
           </button>
         </div>
@@ -184,16 +167,22 @@ export default function Users() {
   const list = users ?? [];
 
   return (
-    <div className="users-page">
-      <div className="page-toolbar">
-        <p className="toolbar-meta muted">{list.length} user{list.length === 1 ? '' : 's'}</p>
-        <button type="button" className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          Add user
+    <div className="page">
+      <TopBarMeta>
+        {list.length} user{list.length === 1 ? '' : 's'}
+      </TopBarMeta>
+      <TopBarActions>
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
+          <Icon name="plus" size={14} />
+          Create user
         </button>
-      </div>
+      </TopBarActions>
 
       {list.length === 0 ? (
         <div className="empty-state card">
+          <div className="empty-state-icon">
+            <Icon name="users" size={20} />
+          </div>
           <p>No users yet.</p>
           <p className="muted">Create a user to issue API tokens.</p>
         </div>
@@ -205,7 +194,7 @@ export default function Users() {
                 <th>Name</th>
                 <th>Role</th>
                 <th>Created</th>
-                <th>Actions</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
@@ -214,32 +203,36 @@ export default function Users() {
                   <td>
                     <span className="name-primary">{user.name}</span>
                     {user.role === 'admin' && (
-                      <span className="pill pill-live user-admin-pill">admin</span>
+                      <span className="pill pill-accent user-admin-pill">Admin</span>
                     )}
                   </td>
-                  <td>{user.role}</td>
+                  <td className="muted">{user.role}</td>
                   <td className="muted">
                     {user.createdAt ? formatRelativeTime(user.createdAt) : '—'}
                   </td>
-                  <td>
-                    <div className="actions-cell">
+                  <td className="actions-cell">
+                    <span className="row-actions">
                       <button
                         type="button"
-                        className="btn btn-secondary btn-sm"
+                        className="icon-btn"
+                        title="Rotate token"
+                        aria-label={`Rotate token for ${user.name}`}
                         disabled={busyId === user.id}
                         onClick={() => handleRotate(user)}
                       >
-                        Rotate token
+                        <Icon name="key" size={18} />
                       </button>
                       <button
                         type="button"
-                        className="btn btn-danger btn-sm"
+                        className="icon-btn"
+                        title="Delete user"
+                        aria-label={`Delete ${user.name}`}
                         disabled={busyId === user.id}
                         onClick={() => handleDelete(user)}
                       >
-                        Delete
+                        <Icon name="trash-2" size={18} />
                       </button>
-                    </div>
+                    </span>
                   </td>
                 </tr>
               ))}

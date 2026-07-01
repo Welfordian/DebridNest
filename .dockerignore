@@ -1,0 +1,20 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+
+bin/
+data/
+tmp/
+*.log
+
+web/dashboard/node_modules/
+web/dashboard/dist/
+stremio-addon/node_modules/
+
+internal/api/admin/files/
+
+# Removed NZB/Usenet code paths. Keep stale local files out of Docker builds.
+internal/nzbget/
+internal/torrent/nzb.go

@@ -99,7 +99,7 @@ services:
       JACKETT_URL: http://jackett:9117
       JACKETT_CONFIG_FILE: /jackett-config/Jackett/ServerConfig.json
       JACKETT_API_KEY: ${JACKETT_API_KEY:-}
-      JACKETT_INDEXERS: ${JACKETT_INDEXERS:-limetorrents,therarbg,eztv,knaben,magnetz}
+      JACKETT_INDEXERS: ${JACKETT_INDEXERS:-1337x,knaben,limetorrents,magnetz,nyaasi,rutracker-ru,thepiratebay,therarbg,yts}
     volumes:
       - jackett-config:/jackett-config:ro
       - ./scripts/setup-jackett-indexers.js:/setup/setup-jackett-indexers.js:ro

@@ -164,7 +164,82 @@ func (h *Handler) getTorrentInfo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown resource")
 		return
 	}
+	if wait := parseInfoWait(r); wait > 0 {
+		rec = h.waitTorrentInfoChange(r, id, rec, wait)
+	}
 	writeJSON(w, http.StatusOK, torrentInfoResponse(h.cfg, rec))
+}
+
+func parseInfoWait(r *http.Request) time.Duration {
+	raw := strings.TrimSpace(r.URL.Query().Get("wait"))
+	if raw == "" {
+		return 0
+	}
+	wait, err := time.ParseDuration(raw)
+	if err != nil {
+		seconds, convErr := strconv.Atoi(raw)
+		if convErr != nil {
+			return 0
+		}
+		wait = time.Duration(seconds) * time.Second
+	}
+	if wait < 0 {
+		return 0
+	}
+	if wait > 25*time.Second {
+		return 25 * time.Second
+	}
+	return wait
+}
+
+func (h *Handler) waitTorrentInfoChange(r *http.Request, id string, initial *storage.TorrentRecord, wait time.Duration) *storage.TorrentRecord {
+	version := torrentInfoVersion(initial)
+	latest := initial
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return latest
+		case <-timer.C:
+			return latest
+		case <-ticker.C:
+			rec, err := h.manager.Get(r.Context(), id)
+			if err != nil {
+				return latest
+			}
+			latest = rec
+			if torrentInfoVersion(rec) != version {
+				return latest
+			}
+		}
+	}
+}
+
+func torrentInfoVersion(rec *storage.TorrentRecord) string {
+	if rec == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(rec.Status)
+	b.WriteString("|")
+	b.WriteString(strconv.Itoa(rec.Progress))
+	b.WriteString("|")
+	b.WriteString(strconv.Itoa(len(rec.Links)))
+	for _, f := range rec.Files {
+		b.WriteString("|")
+		b.WriteString(strconv.Itoa(f.ID))
+		b.WriteString(":")
+		b.WriteString(strconv.FormatBool(f.Selected))
+		b.WriteString(":")
+		b.WriteString(strconv.FormatInt(f.DownloadedBytes, 10))
+		b.WriteString(":")
+		b.WriteString(strconv.FormatInt(f.StreamableBytes, 10))
+	}
+	return b.String()
 }
 
 func (h *Handler) selectFiles(w http.ResponseWriter, r *http.Request) {
@@ -312,14 +387,15 @@ func (h *Handler) serveSigned(w http.ResponseWriter, r *http.Request, rawPath st
 	}
 
 	filename := filepath.Base(relativePath)
-	startOffset := torrentmgr.ParseRangeStart(r.Header.Get("Range"), file.Bytes)
+	byteRange := torrentmgr.ParseRange(r.Header.Get("Range"), file.Bytes)
 	reader, modTime, _, err := h.manager.OpenServingReader(ctx, rec.ID, file.ID, torrentmgr.StreamOptions{
-		StartOffset: startOffset,
+		StartOffset:   byteRange.Start,
+		RequestLength: byteRange.Length,
 	})
 	if err != nil {
 		if errors.Is(err, torrentmgr.ErrStreamNotReady) {
 			retryAfter := "2"
-			if startOffset > 0 {
+			if byteRange.Start > 0 {
 				retryAfter = "1"
 			}
 			w.Header().Set("Retry-After", retryAfter)
@@ -376,6 +452,7 @@ func torrentInfoResponse(cfg config.Config, rec *storage.TorrentRecord) map[stri
 			"bytes":            f.Bytes,
 			"selected":         selected,
 			"downloaded_bytes": f.DownloadedBytes,
+			"streamable_bytes": f.StreamableBytes,
 		})
 	}
 	resp["files"] = files
@@ -398,20 +475,17 @@ func torrentSummaryResponse(cfg config.Config, rec *storage.TorrentRecord) map[s
 	if rec.EndedAt != nil {
 		resp["ended"] = rec.EndedAt.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
-	if rec.Status == "downloading" || rec.Status == "queued" {
+	if rec.Status == string(torrentmgr.StatusDownloading) || rec.Status == string(torrentmgr.StatusQueued) {
 		resp["speed"] = rec.Speed
 	}
-	if rec.Status == "downloading" || rec.Status == "magnet_conversion" {
+	if rec.Status == string(torrentmgr.StatusDownloading) || rec.Status == string(torrentmgr.StatusMagnetConversion) {
 		resp["seeders"] = rec.Seeders
 	}
 	return resp
 }
 
 func buildLinks(cfg config.Config, rec *storage.TorrentRecord) []string {
-	if rec.Status == "dead" {
-		return []string{}
-	}
-	if rec.Status != "downloaded" && !torrentmgr.IsStreamable(rec, cfg.MinStreamBytes()) {
+	if !torrentmgr.LifecycleViewForRecord(rec, cfg.MinStreamBytes()).LinksVisible {
 		return []string{}
 	}
 	if len(rec.Links) > 0 {

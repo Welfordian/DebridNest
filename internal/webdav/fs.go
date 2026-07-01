@@ -71,7 +71,7 @@ func (fs *torrentFS) buildIndex(ctx context.Context) (*torrentIndex, error) {
 	seen := map[string]int{}
 	for i := range items {
 		rec := &items[i]
-		if rec.Status != "downloaded" {
+		if !torrent.IsCompletedStatus(rec.Status) {
 			continue
 		}
 		base := sanitizeName(rec.Name)
@@ -208,11 +208,11 @@ type vfsDir struct {
 	pos     int
 }
 
-func (d *vfsDir) Read([]byte) (int, error)              { return 0, io.EOF }
-func (d *vfsDir) Write([]byte) (int, error)             { return 0, errReadOnly }
-func (d *vfsDir) Seek(int64, int) (int64, error)        { return 0, nil }
-func (d *vfsDir) Close() error                          { return nil }
-func (d *vfsDir) Stat() (os.FileInfo, error)            { return d.info, nil }
+func (d *vfsDir) Read([]byte) (int, error)       { return 0, io.EOF }
+func (d *vfsDir) Write([]byte) (int, error)      { return 0, errReadOnly }
+func (d *vfsDir) Seek(int64, int) (int64, error) { return 0, nil }
+func (d *vfsDir) Close() error                   { return nil }
+func (d *vfsDir) Stat() (os.FileInfo, error)     { return d.info, nil }
 func (d *vfsDir) Readdir(n int) ([]os.FileInfo, error) {
 	if d.pos >= len(d.entries) {
 		if n <= 0 {

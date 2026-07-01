@@ -1,7 +1,7 @@
 const progress = require('./progress')
 const debridnest = require('./debridnest')
 
-const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
+const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 500)
 
 function isFailedStatus(status) {
   return ['error', 'magnet_error', 'dead', 'virus'].includes(status)
@@ -18,12 +18,17 @@ async function ensureTorrentStarted(job) {
     job.starting = debridnest.startDownload(job.apiUrl, job.apiToken, job.magnet, {
       torrentLink: job.torrentLink,
       label: job.label,
+      season: job.season,
+      episode: job.episode,
     })
       .then(async (torrentId) => {
         job.torrentId = torrentId
         delete job.starting
         try {
-          await debridnest.prepareTorrent(job.apiUrl, job.apiToken, torrentId)
+          await debridnest.prepareTorrent(job.apiUrl, job.apiToken, torrentId, {
+            season: job.season,
+            episode: job.episode,
+          })
         } catch {
           // magnet may still be resolving metadata
         }
@@ -38,12 +43,16 @@ async function ensureTorrentStarted(job) {
   return job.torrentId
 }
 
-async function resolveJobStream(job) {
+async function resolveJobStream(job, options = {}) {
   if (job.downloadUrl) {
     return job.downloadUrl
   }
 
-  const resolved = await debridnest.resolveStreamUrl(job.apiUrl, job.apiToken, job.torrentId)
+  const resolved = await debridnest.resolveStreamUrl(job.apiUrl, job.apiToken, job.torrentId, {
+    season: job.season,
+    episode: job.episode,
+    infoWait: options.infoWait,
+  })
   if (resolved) {
     job.hostLink = resolved.hostLink
     job.downloadUrl = resolved.download
@@ -57,7 +66,7 @@ async function waitForJobDownloadUrl(job, maxWaitMs = Number(process.env.PROGRES
   await ensureTorrentStarted(job)
   const deadline = Date.now() + maxWaitMs
   while (Date.now() < deadline) {
-    const url = await resolveJobStream(job)
+    const url = await resolveJobStream(job, { infoWait: '25s' })
     if (url) {
       return url
     }
@@ -89,9 +98,14 @@ async function handleProgressRequest(req, res, job) {
   res.redirect(302, downloadUrl)
 }
 
+function prewarmJob(job) {
+  return progress.withJobLock(job, () => ensureTorrentStarted(job))
+}
+
 module.exports = {
   handleProgressRequest,
   ensureTorrentStarted,
   resolveJobStream,
   waitForJobDownloadUrl,
+  prewarmJob,
 }

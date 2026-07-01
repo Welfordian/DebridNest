@@ -8,6 +8,7 @@ export interface Stats {
   activeCount: number;
   downloadSpeed: number;
   statusCounts: Record<string, number>;
+  lifecycleCounts?: Partial<Record<TorrentLifecycleGroup, number>>;
   retentionDays: number;
   publicUrl: string;
   rateLimitMbps: number;
@@ -17,11 +18,30 @@ export interface Stats {
   uptimeSeconds?: number;
 }
 
+export type TorrentLifecycleGroup = 'active' | 'completed' | 'failed' | 'other';
+
+export type TorrentLifecycleTone = 'active' | 'success' | 'danger' | 'muted' | 'streamable';
+
+export interface TorrentLifecycle {
+  status: string;
+  group: TorrentLifecycleGroup;
+  label: string;
+  description: string;
+  tone: TorrentLifecycleTone;
+  active: boolean;
+  completed: boolean;
+  failed: boolean;
+  streamable: boolean;
+  linksVisible: boolean;
+  sortRank: number;
+}
+
 export interface Torrent {
   id: string;
   name: string;
   hash: string;
   status: string;
+  lifecycle?: TorrentLifecycle;
   progress: number;
   bytes: number;
   size: number;
@@ -37,6 +57,7 @@ export interface TorrentFile {
   bytes: number;
   selected: boolean | number;
   downloadedBytes: number;
+  streamableBytes?: number;
 }
 
 export interface TorrentDetail extends Torrent {

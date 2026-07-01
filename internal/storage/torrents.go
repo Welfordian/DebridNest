@@ -34,6 +34,7 @@ type TorrentFileRecord struct {
 	Bytes           int64
 	Selected        bool
 	DownloadedBytes int64
+	StreamableBytes int64
 	DiskPath        string
 	ObjectKey       string
 	RemoteStored    bool
@@ -77,9 +78,9 @@ func (db *DB) CreateTorrent(ctx context.Context, rec TorrentRecord) error {
 			remoteStored = 1
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			f.ID, rec.ID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.DiskPath, f.ObjectKey, remoteStored,
+			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, streamable_bytes, disk_path, object_key, remote_stored)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.ID, rec.ID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.StreamableBytes, f.DiskPath, f.ObjectKey, remoteStored,
 		)
 		if err != nil {
 			return err
@@ -123,9 +124,9 @@ func (db *DB) UpdateTorrentFiles(ctx context.Context, torrentID string, files []
 			remoteStored = 1
 		}
 		_, err = tx.ExecContext(ctx, `
-			UPDATE torrent_files SET selected = ?, downloaded_bytes = ?, disk_path = ?, object_key = ?, remote_stored = ?
+			UPDATE torrent_files SET selected = ?, downloaded_bytes = ?, streamable_bytes = ?, disk_path = ?, object_key = ?, remote_stored = ?
 			WHERE torrent_id = ? AND id = ?`,
-			selected, f.DownloadedBytes, f.DiskPath, f.ObjectKey, remoteStored, torrentID, f.ID,
+			selected, f.DownloadedBytes, f.StreamableBytes, f.DiskPath, f.ObjectKey, remoteStored, torrentID, f.ID,
 		)
 		if err != nil {
 			return err
@@ -304,9 +305,9 @@ func (db *DB) GetTorrentFileByDiskPath(ctx context.Context, diskPath string) (To
 	var f TorrentFileRecord
 	var selected, remoteStored int
 	err := db.QueryRowContext(ctx, `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, streamable_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files WHERE disk_path = ?`, diskPath).Scan(
-		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
+		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.StreamableBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
 	)
 	if err != nil {
 		return TorrentFileRecord{}, err
@@ -328,11 +329,11 @@ func (db *DB) GetTorrentFileByRelativePath(ctx context.Context, relativePath str
 	var f TorrentFileRecord
 	var selected, remoteStored int
 	err := db.QueryRowContext(ctx, `
-		SELECT tf.id, tf.torrent_id, tf.path, tf.bytes, tf.selected, tf.downloaded_bytes, tf.disk_path, tf.object_key, tf.remote_stored
+		SELECT tf.id, tf.torrent_id, tf.path, tf.bytes, tf.selected, tf.downloaded_bytes, tf.streamable_bytes, tf.disk_path, tf.object_key, tf.remote_stored
 		FROM torrent_files tf
 		JOIN torrents t ON t.id = tf.torrent_id
 		WHERE t.info_hash = ? AND tf.path = ?`, infoHash, subPath).Scan(
-		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
+		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.StreamableBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
 	)
 	if err != nil {
 		return TorrentFileRecord{}, err
@@ -346,12 +347,12 @@ func (db *DB) GetTorrentFileByBasename(ctx context.Context, basename string) (To
 	var f TorrentFileRecord
 	var selected, remoteStored int
 	err := db.QueryRowContext(ctx, `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, streamable_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files
 		WHERE disk_path LIKE ? OR path LIKE ?
 		ORDER BY downloaded_bytes DESC
 		LIMIT 1`, "%/"+basename, "%/"+basename).Scan(
-		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
+		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.StreamableBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
 	)
 	if err != nil {
 		return TorrentFileRecord{}, err
@@ -403,7 +404,7 @@ func (db *DB) ListDownloads(ctx context.Context, limit int) ([]DownloadRecord, e
 
 func (db *DB) listTorrentFiles(ctx context.Context, torrentID string) ([]TorrentFileRecord, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, streamable_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files WHERE torrent_id = ? ORDER BY id ASC`, torrentID)
 	if err != nil {
 		return nil, err
@@ -426,7 +427,7 @@ func scanTorrentFile(row interface {
 }) (TorrentFileRecord, error) {
 	var f TorrentFileRecord
 	var selected, remoteStored int
-	if err := row.Scan(&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored); err != nil {
+	if err := row.Scan(&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.StreamableBytes, &f.DiskPath, &f.ObjectKey, &remoteStored); err != nil {
 		return TorrentFileRecord{}, err
 	}
 	f.Selected = selected == 1
@@ -489,7 +490,7 @@ func (db *DB) listTorrentFilesBatch(ctx context.Context, torrentIDs []string) (m
 		args[i] = id
 	}
 	query := `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, streamable_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files WHERE torrent_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY torrent_id ASC, id ASC`
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -652,8 +653,20 @@ func (db *DB) CountTorrentsByStatus(ctx context.Context) (map[string]int, error)
 }
 
 func (db *DB) ResetTorrentForRetry(ctx context.Context, id string) error {
-	_, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE torrents SET status = 'queued', progress = 0, ended_at = NULL, speed = 0
-		WHERE id = ?`, id)
-	return err
+		WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE torrent_files SET downloaded_bytes = 0, streamable_bytes = 0
+		WHERE torrent_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

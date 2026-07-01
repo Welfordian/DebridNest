@@ -1,14 +1,14 @@
 const progress = require('./progress')
 const progressHandler = require('./progressHandler')
 
-const PLAY_WAIT_MS = Number(process.env.PLAY_WAIT_MS || 120000)
-const PLAY_POLL_MS = Number(process.env.PLAY_POLL_MS || 2000)
+const PLAY_WAIT_MS = Number(process.env.PLAY_WAIT_MS || 30000)
+const PLAY_POLL_MS = Number(process.env.PLAY_POLL_MS || 500)
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function resolvePlayUrl(entry) {
+async function resolvePlayUrl(entry, options = {}) {
   if (entry.directUrl) {
     return entry.directUrl
   }
@@ -19,7 +19,9 @@ async function resolvePlayUrl(entry) {
       throw new Error('Download job not found or expired')
     }
     await progressHandler.ensureTorrentStarted(job)
-    const url = await progressHandler.resolveJobStream(job)
+    const url = await progressHandler.resolveJobStream(job, {
+      infoWait: options.infoWait,
+    })
     if (!url) {
       throw new Error('Stream not ready')
     }
@@ -36,7 +38,9 @@ async function waitForPlayUrl(entry, options = {}) {
 
   while (Date.now() < deadline) {
     try {
-      return await resolvePlayUrl(entry)
+      const remaining = deadline - Date.now()
+      const waitSeconds = Math.max(1, Math.min(25, Math.ceil(remaining / 1000)))
+      return await resolvePlayUrl(entry, { infoWait: `${waitSeconds}s` })
     } catch (err) {
       if (err.message !== 'Stream not ready') {
         throw err

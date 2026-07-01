@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { fetchActivity } from '../api';
+import { TopBarActions, TopBarMeta } from '../components/TopBar';
 import { usePolling } from '../hooks/usePolling';
 import { formatActivityLabel, formatActivitySummary } from '../lib/activityFormat';
 import { formatRelativeTime } from '../lib/format';
@@ -34,33 +35,31 @@ export default function Activity() {
   }
 
   return (
-    <div className="activity-page">
-      <div className="page-toolbar">
-        <p className="toolbar-meta muted">
-          {items.length > 0
-            ? `Showing ${offset + 1}–${offset + items.length}`
-            : 'No events on this page'}
-        </p>
-        <div className="toolbar-actions">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={!hasPrev}
-            onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
-          >
-            Previous
-          </button>
-          <span className="pagination-meta muted">Page {page}</span>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={!hasNext}
-            onClick={() => setOffset((o) => o + PAGE_SIZE)}
-          >
-            Next
-          </button>
-        </div>
-      </div>
+    <div className="page">
+      <TopBarMeta>
+        {items.length > 0
+          ? `Showing ${offset + 1}–${offset + items.length}`
+          : 'No events on this page'}
+      </TopBarMeta>
+      <TopBarActions>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={!hasPrev}
+          onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+        >
+          Previous
+        </button>
+        <span className="pagination-meta muted">Page {page}</span>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={!hasNext}
+          onClick={() => setOffset((o) => o + PAGE_SIZE)}
+        >
+          Next
+        </button>
+      </TopBarActions>
 
       {items.length === 0 ? (
         <div className="empty-state card">
@@ -74,7 +73,7 @@ export default function Activity() {
                 <span className="activity-action">{formatActivityLabel(event)}</span>
                 <span className="activity-summary">{formatActivitySummary(event)}</span>
               </div>
-              <div className="activity-item-meta muted">
+              <div className="activity-item-meta">
                 {event.userName && <span>{event.userName}</span>}
                 <time dateTime={event.createdAt} title={new Date(event.createdAt).toLocaleString()}>
                   {formatRelativeTime(event.createdAt)}

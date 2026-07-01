@@ -1,13 +1,15 @@
 import { ReactNode, useEffect } from 'react';
+import Icon from './Icon';
 
 interface ModalProps {
   open?: boolean;
   title: string;
   onClose: () => void;
+  wide?: boolean;
   children: ReactNode;
 }
 
-export default function Modal({ open = true, title, onClose, children }: ModalProps) {
+export default function Modal({ open = true, title, onClose, wide = false, children }: ModalProps) {
   useEffect(() => {
     if (!open) return;
 
@@ -24,7 +26,7 @@ export default function Modal({ open = true, title, onClose, children }: ModalPr
   return (
     <div className="modal-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal card"
+        className={wide ? 'modal modal-wide' : 'modal'}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -32,8 +34,8 @@ export default function Modal({ open = true, title, onClose, children }: ModalPr
       >
         <div className="modal-header">
           <h2 id="modal-title">{title}</h2>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close">
-            ✕
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
+            <Icon name="x" size={18} />
           </button>
         </div>
         <div className="modal-body">{children}</div>

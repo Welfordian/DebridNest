@@ -15,6 +15,8 @@ import {
   type SystemInfo,
 } from '../api';
 import CopyButton from '../components/CopyButton';
+import Icon from '../components/Icon';
+import Toggle from '../components/Toggle';
 import { useToast } from '../components/Toast';
 import { usePolling } from '../hooks/usePolling';
 import { formatBytes, formatUptime } from '../lib/format';
@@ -22,8 +24,10 @@ import { formatBytes, formatUptime } from '../lib/format';
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="config-row">
-      <span className="config-label">{label}</span>
-      <span className="config-value">{value}</span>
+      <div className="config-row-text">
+        <span className="config-label">{label}</span>
+        <span className="config-value">{value}</span>
+      </div>
     </div>
   );
 }
@@ -79,7 +83,7 @@ interface SettingsProps {
   isAdmin: boolean;
 }
 
-export default function Settings({ isAdmin }: SettingsProps) {
+export default function SettingsPage({ isAdmin }: SettingsProps) {
   const { toast } = useToast();
   const [cleanupResult, setCleanupResult] = useState<RetentionResult | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
@@ -241,16 +245,16 @@ export default function Settings({ isAdmin }: SettingsProps) {
   return (
     <div className="settings">
       <form className="settings-editable" onSubmit={handleSave}>
-        <section className="card config-card settings-form">
+        <section className="card">
           <div className="card-heading">
-            <h2>Limits & retention</h2>
+            <h2>Limits &amp; retention</h2>
             {isAdmin && (
               <button type="submit" className="btn btn-primary btn-sm" disabled={saveBusy}>
                 {saveBusy ? 'Saving…' : 'Save changes'}
               </button>
             )}
           </div>
-          <p className="muted section-desc">
+          <p className="section-desc">
             {isAdmin
               ? 'Adjust retention, disk quota, and download rate limit. Use 0 to disable a limit.'
               : 'Current limits (read-only). Contact an admin to change these values.'}
@@ -293,15 +297,16 @@ export default function Settings({ isAdmin }: SettingsProps) {
                   setForm((f) => ({ ...f, downloadRateLimitMbps: e.target.value }))
                 }
               />
+              <p className="form-hint">0 = unlimited</p>
             </div>
           </div>
         </section>
 
-        <section className="card config-card settings-form">
+        <section className="card">
           <div className="card-heading">
             <h2>Notifications</h2>
           </div>
-          <p className="muted section-desc">
+          <p className="section-desc">
             Webhook targets and event toggles for download notifications.
           </p>
           <div className="form-row">
@@ -309,7 +314,7 @@ export default function Settings({ isAdmin }: SettingsProps) {
               <label htmlFor="discord-webhook">Discord webhook URL</label>
               <input
                 id="discord-webhook"
-                className="input"
+                className="input input-mono"
                 type="url"
                 value={form.webhookDiscordUrl}
                 disabled={!isAdmin}
@@ -321,7 +326,7 @@ export default function Settings({ isAdmin }: SettingsProps) {
               <label htmlFor="ntfy-topic">ntfy topic</label>
               <input
                 id="ntfy-topic"
-                className="input"
+                className="input input-mono"
                 value={form.webhookNtfyTopic}
                 disabled={!isAdmin}
                 placeholder="debridnest-alerts"
@@ -334,7 +339,7 @@ export default function Settings({ isAdmin }: SettingsProps) {
               <label htmlFor="gotify-url">Gotify URL</label>
               <input
                 id="gotify-url"
-                className="input"
+                className="input input-mono"
                 type="url"
                 value={form.webhookGotifyUrl}
                 disabled={!isAdmin}
@@ -346,7 +351,7 @@ export default function Settings({ isAdmin }: SettingsProps) {
               <label htmlFor="gotify-token">Gotify token</label>
               <input
                 id="gotify-token"
-                className="input"
+                className="input input-mono"
                 type="password"
                 value={form.webhookGotifyToken}
                 disabled={!isAdmin}
@@ -356,169 +361,160 @@ export default function Settings({ isAdmin }: SettingsProps) {
             </div>
           </div>
           <div className="toggle-grid">
-            <label className="toggle-label">
-              <input
-                type="checkbox"
-                checked={form.notifyOnDownloadComplete}
-                disabled={!isAdmin}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, notifyOnDownloadComplete: e.target.checked }))
-                }
-              />
-              <span>Notify on download complete</span>
-            </label>
-            <label className="toggle-label">
-              <input
-                type="checkbox"
-                checked={form.notifyOnQuotaWarning}
-                disabled={!isAdmin}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, notifyOnQuotaWarning: e.target.checked }))
-                }
-              />
-              <span>Notify when disk quota &gt;90%</span>
-            </label>
+            <Toggle
+              checked={form.notifyOnDownloadComplete}
+              disabled={!isAdmin}
+              onChange={(checked) =>
+                setForm((f) => ({ ...f, notifyOnDownloadComplete: checked }))
+              }
+              label="Notify on download complete"
+            />
+            <Toggle
+              checked={form.notifyOnQuotaWarning}
+              disabled={!isAdmin}
+              onChange={(checked) => setForm((f) => ({ ...f, notifyOnQuotaWarning: checked }))}
+              label={<span>Notify when disk quota &gt;90%</span>}
+            />
           </div>
         </section>
 
         {isAdmin && (
-          <section className="card config-card settings-form">
+          <section className="card">
             <div className="card-heading">
               <h2>Object storage (S3)</h2>
+              <Toggle
+                checked={form.s3Enabled}
+                onChange={(checked) => setForm((f) => ({ ...f, s3Enabled: checked }))}
+                label={form.s3Enabled ? 'Enabled' : 'Disabled'}
+              />
             </div>
-            <p className="muted section-desc">
+            <p className="section-desc">
               Upload completed files to S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2).
               Save settings before testing the connection.
             </p>
-            <div className="toggle-grid">
-              <label className="toggle-label">
-                <input
-                  type="checkbox"
-                  checked={form.s3Enabled}
-                  onChange={(e) => setForm((f) => ({ ...f, s3Enabled: e.target.checked }))}
-                />
-                <span>Enable S3 upload</span>
-              </label>
-              <label className="toggle-label">
-                <input
-                  type="checkbox"
-                  checked={form.s3ForcePathStyle}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, s3ForcePathStyle: e.target.checked }))
-                  }
-                />
-                <span>Force path-style URLs</span>
-              </label>
-              <label className="toggle-label">
-                <input
-                  type="checkbox"
-                  checked={form.s3OffloadLocal}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, s3OffloadLocal: e.target.checked }))
-                  }
-                />
-                <span>Delete local file after upload</span>
-              </label>
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label htmlFor="s3-endpoint">Endpoint</label>
-                <input
-                  id="s3-endpoint"
-                  className="input"
-                  type="url"
-                  value={form.s3Endpoint}
-                  placeholder="https://…r2.cloudflarestorage.com"
-                  onChange={(e) => setForm((f) => ({ ...f, s3Endpoint: e.target.value }))}
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="s3-bucket">Bucket</label>
-                <input
-                  id="s3-bucket"
-                  className="input"
-                  value={form.s3Bucket}
-                  placeholder="my-bucket"
-                  onChange={(e) => setForm((f) => ({ ...f, s3Bucket: e.target.value }))}
-                />
-              </div>
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label htmlFor="s3-region">Region</label>
-                <input
-                  id="s3-region"
-                  className="input"
-                  value={form.s3Region}
-                  placeholder="auto"
-                  onChange={(e) => setForm((f) => ({ ...f, s3Region: e.target.value }))}
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="s3-prefix">Key prefix</label>
-                <input
-                  id="s3-prefix"
-                  className="input"
-                  value={form.s3Prefix}
-                  placeholder="debridnest/"
-                  onChange={(e) => setForm((f) => ({ ...f, s3Prefix: e.target.value }))}
-                />
-              </div>
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label htmlFor="s3-access-key">Access key</label>
-                <input
-                  id="s3-access-key"
-                  className="input"
-                  value={form.s3AccessKey}
-                  autoComplete="off"
-                  onChange={(e) => setForm((f) => ({ ...f, s3AccessKey: e.target.value }))}
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="s3-secret-key">Secret key</label>
-                <input
-                  id="s3-secret-key"
-                  className="input"
-                  type="password"
-                  value={form.s3SecretKey}
-                  autoComplete="off"
-                  onChange={(e) => setForm((f) => ({ ...f, s3SecretKey: e.target.value }))}
-                />
-              </div>
-            </div>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={s3TestBusy || !form.s3Enabled}
-              onClick={handleS3Test}
+            <div
+              style={{
+                opacity: form.s3Enabled ? 1 : 0.45,
+                pointerEvents: form.s3Enabled ? 'auto' : 'none',
+              }}
             >
-              {s3TestBusy ? 'Testing…' : 'Test connection'}
-            </button>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="s3-endpoint">Endpoint</label>
+                  <input
+                    id="s3-endpoint"
+                    className="input input-mono"
+                    type="url"
+                    value={form.s3Endpoint}
+                    placeholder="https://accountid.r2.cloudflarestorage.com"
+                    onChange={(e) => setForm((f) => ({ ...f, s3Endpoint: e.target.value }))}
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="s3-bucket">Bucket</label>
+                  <input
+                    id="s3-bucket"
+                    className="input input-mono"
+                    value={form.s3Bucket}
+                    placeholder="debridnest"
+                    onChange={(e) => setForm((f) => ({ ...f, s3Bucket: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="s3-region">Region</label>
+                  <input
+                    id="s3-region"
+                    className="input input-mono"
+                    value={form.s3Region}
+                    placeholder="auto"
+                    onChange={(e) => setForm((f) => ({ ...f, s3Region: e.target.value }))}
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="s3-prefix">Key prefix</label>
+                  <input
+                    id="s3-prefix"
+                    className="input input-mono"
+                    value={form.s3Prefix}
+                    placeholder="debridnest/"
+                    onChange={(e) => setForm((f) => ({ ...f, s3Prefix: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="s3-access-key">Access key</label>
+                  <input
+                    id="s3-access-key"
+                    className="input input-mono"
+                    type="password"
+                    value={form.s3AccessKey}
+                    placeholder="(configured)"
+                    autoComplete="off"
+                    onChange={(e) => setForm((f) => ({ ...f, s3AccessKey: e.target.value }))}
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="s3-secret-key">Secret key</label>
+                  <input
+                    id="s3-secret-key"
+                    className="input input-mono"
+                    type="password"
+                    value={form.s3SecretKey}
+                    placeholder="(configured)"
+                    autoComplete="off"
+                    onChange={(e) => setForm((f) => ({ ...f, s3SecretKey: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="toggle-grid" style={{ marginTop: 0, marginBottom: 14 }}>
+                <Toggle
+                  checked={form.s3ForcePathStyle}
+                  onChange={(checked) => setForm((f) => ({ ...f, s3ForcePathStyle: checked }))}
+                  label="Force path-style URLs"
+                />
+                <Toggle
+                  checked={form.s3OffloadLocal}
+                  onChange={(checked) => setForm((f) => ({ ...f, s3OffloadLocal: checked }))}
+                  label="Delete local file after upload"
+                />
+              </div>
+            </div>
+            {form.s3Enabled && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={s3TestBusy}
+                onClick={handleS3Test}
+              >
+                {s3TestBusy ? 'Testing…' : 'Test connection'}
+              </button>
+            )}
           </section>
         )}
       </form>
 
-      <section className="card config-card">
+      <section className="card">
         <div className="card-heading">
           <h2>Service URLs</h2>
         </div>
         <div className="url-list">
           <UrlRow label="Public URL" url={urls.public} />
-          <UrlRow label="WebDAV URL" url={urls.webdav} />
-          <UrlRow label="Metrics URL" url={urls.metrics} />
-          <UrlRow label="qBit API URL" url={urls.qbit} />
-          <UrlRow label="Stremio addon URL" url={urls.stremio} />
-          <UrlRow label="Dashboard URL" url={urls.dashboard} />
+          <UrlRow label="WebDAV" url={urls.webdav} />
+          <UrlRow label="Metrics" url={urls.metrics} />
+          <UrlRow label="qBittorrent API (Sonarr/Radarr)" url={urls.qbit} />
+          <UrlRow label="Stremio addon" url={urls.stremio} />
+          <UrlRow label="Dashboard" url={urls.dashboard} />
         </div>
-        <p className="muted hint-text">
+        <p className="hint-text">
           Stremio addon runs separately (default port 7001). Use the configure page to generate a
           personalized manifest URL.
         </p>
       </section>
 
-      <section className="card config-card">
+      <section className="card">
         <div className="card-heading">
           <h2>Configuration</h2>
         </div>
@@ -542,7 +538,7 @@ export default function Settings({ isAdmin }: SettingsProps) {
         </div>
       </section>
 
-      <section className="card config-card">
+      <section className="card">
         <div className="card-heading">
           <h2>System</h2>
         </div>
@@ -567,39 +563,30 @@ export default function Settings({ isAdmin }: SettingsProps) {
         )}
       </section>
 
-      <section className="card config-card">
+      <section className="card">
         <div className="card-heading">
           <h2>Maintenance</h2>
         </div>
-        <p className="muted section-desc">
-          Run retention cleanup immediately — removes torrents past retention age and enforces disk
-          quota.
+        <p className="section-desc">
+          Run retention cleanup now, or purge finished torrents. Purges cannot be undone.
         </p>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          disabled={cleanupBusy}
-          onClick={handleCleanup}
-        >
-          {cleanupBusy ? 'Running cleanup…' : 'Run retention cleanup now'}
-        </button>
-        {cleanupResult && (
-          <p className="success-msg">
-            Cleanup complete — {cleanupResult.ageRemoved} removed by age,{' '}
-            {cleanupResult.quotaRemoved} by quota. Disk: {formatBytes(cleanupResult.diskUsed)}
-            {cleanupResult.diskQuota > 0 && ` / ${formatBytes(cleanupResult.diskQuota)}`}.
-          </p>
-        )}
-        {cleanupError && <p className="error">{cleanupError}</p>}
-
         <div className="maintenance-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={cleanupBusy}
+            onClick={handleCleanup}
+          >
+            <Icon name="rotate-cw" />
+            {cleanupBusy ? 'Running cleanup…' : 'Run cleanup'}
+          </button>
           <button
             type="button"
             className="btn btn-danger"
             disabled={purgeBusy !== null}
             onClick={() => handlePurge('completed')}
           >
-            {purgeBusy === 'completed' ? 'Deleting…' : 'Delete all completed'}
+            {purgeBusy === 'completed' ? 'Deleting…' : 'Purge completed'}
           </button>
           <button
             type="button"
@@ -607,10 +594,18 @@ export default function Settings({ isAdmin }: SettingsProps) {
             disabled={purgeBusy !== null}
             onClick={() => handlePurge('failed')}
           >
-            {purgeBusy === 'failed' ? 'Deleting…' : 'Delete all failed'}
+            {purgeBusy === 'failed' ? 'Deleting…' : 'Purge failed'}
           </button>
         </div>
-        {purgeMessage && <p className="muted">{purgeMessage}</p>}
+        {cleanupResult && (
+          <p className="success-msg">
+            Cleanup complete — {cleanupResult.ageRemoved} removed by age,{' '}
+            {cleanupResult.quotaRemoved} by quota. Disk: {formatBytes(cleanupResult.diskUsed)}
+            {cleanupResult.diskQuota > 0 && ` / ${formatBytes(cleanupResult.diskQuota)}`}.
+          </p>
+        )}
+        {cleanupError && <p className="error hint-text">{cleanupError}</p>}
+        {purgeMessage && <p className="muted hint-text">{purgeMessage}</p>}
       </section>
 
       {error && <p className="error">{error}</p>}

@@ -25,15 +25,16 @@ import (
 )
 
 type Manager struct {
-	cfg      config.Config
-	db       *storage.DB
-	signer   *links.Signer
-	client   *torrent.Client
-	mu       sync.RWMutex
-	active   map[string]*runtimeTorrent
-	filesDir string
-	hooks    *Hooks
-	settings *settings.Store
+	cfg       config.Config
+	db        *storage.DB
+	signer    *links.Signer
+	client    *torrent.Client
+	mu        sync.RWMutex
+	active    map[string]*runtimeTorrent
+	filesDir  string
+	hooks     *Hooks
+	settings  *settings.Store
+	lifecycle Lifecycle
 
 	objectMu       sync.RWMutex
 	objectStoreCfg objectstore.Config
@@ -88,13 +89,8 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, setting
 	clientCfg := torrent.NewDefaultClientConfig()
 	clientCfg.DataDir = torrentDir
 	clientCfg.SetListenAddr(":" + cfg.TorrentPort)
-	if cfg.SeedAfterComplete {
-		clientCfg.Seed = true
-		clientCfg.NoUpload = false
-	} else {
-		clientCfg.Seed = false
-		clientCfg.NoUpload = true
-	}
+	clientCfg.Seed = cfg.SeedAfterComplete
+	clientCfg.NoUpload = false
 	clientCfg.DefaultStorage = tstorage.NewFileByInfoHash(filesDir)
 
 	client, err := torrent.NewClient(clientCfg)
@@ -116,6 +112,7 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, setting
 		active:         make(map[string]*runtimeTorrent),
 		filesDir:       filesDir,
 		settings:       settingsStore,
+		lifecycle:      NewLifecycle(cfg.MinStreamBytes()),
 		objectStoreCfg: s3Cfg,
 		objectStore:    objectStore,
 	}
@@ -155,7 +152,7 @@ func (m *Manager) AddMagnet(ctx context.Context, magnet string) (*storage.Torren
 
 	if existing, err := m.db.GetTorrentByHash(ctx, ih); err == nil && existing != nil {
 		m.refreshProgress(ctx, existing)
-		if existing.Status == "downloaded" {
+		if existing.Status == string(StatusDownloaded) {
 			m.ensureHostLinks(ctx, existing)
 			return existing, nil
 		}
@@ -184,7 +181,7 @@ func (m *Manager) AddMagnet(ctx context.Context, magnet string) (*storage.Torren
 		ID:       id,
 		InfoHash: ih,
 		Magnet:   magnet,
-		Status:   "magnet_conversion",
+		Status:   string(StatusMagnetConversion),
 		AddedAt:  time.Now().UTC(),
 		Progress: 0,
 	}
@@ -203,25 +200,9 @@ func (m *Manager) SelectFiles(ctx context.Context, torrentID, filesSpec string) 
 		return err
 	}
 
-	selectedIDs, err := parseFilesSpec(filesSpec, len(rec.Files))
-	if err != nil {
+	if err := m.lifecycle.ApplySelection(rec, filesSpec); err != nil {
 		return err
 	}
-
-	selectedSet := map[int]bool{}
-	for _, id := range selectedIDs {
-		selectedSet[id] = true
-	}
-
-	var selectedBytes int64
-	for i := range rec.Files {
-		rec.Files[i].Selected = selectedSet[rec.Files[i].ID]
-		if rec.Files[i].Selected {
-			selectedBytes += rec.Files[i].Bytes
-		}
-	}
-	rec.Bytes = selectedBytes
-	rec.Status = "queued"
 	if err := m.db.UpdateTorrentFiles(ctx, torrentID, rec.Files); err != nil {
 		return err
 	}
@@ -310,6 +291,9 @@ func (m *Manager) Unrestrict(ctx context.Context, hostLink string) (*storage.Dow
 	if file == nil || !file.Selected {
 		return nil, fmt.Errorf("file not found")
 	}
+	if !m.lifecycle.FileLinksVisible(rec, *file) {
+		return nil, ErrStreamNotReady
+	}
 
 	relativePath, err := filepath.Rel(m.filesDir, file.DiskPath)
 	if err != nil || strings.HasPrefix(relativePath, "..") {
@@ -371,7 +355,7 @@ func (m *Manager) InstantAvailability(ctx context.Context, hashes []string) map[
 
 	for _, hash := range normalized {
 		rec, ok := byHash[hash]
-		if !ok || (rec.Status != "downloaded" && !m.isStreamable(rec)) {
+		if !ok || !m.lifecycle.LinksVisible(rec) {
 			continue
 		}
 		m.ensureHostLinks(ctx, rec)
@@ -476,7 +460,7 @@ func (m *Manager) finalizeTorrentMetadata(ctx context.Context, id string, t *tor
 	mi := t.Metainfo()
 	var infoBuf bytes.Buffer
 	if err := mi.Write(&infoBuf); err != nil {
-		m.setError(ctx, id, "magnet_error")
+		m.setError(ctx, id, string(StatusMagnetError))
 		return
 	}
 	infoBytes := infoBuf.Bytes()
@@ -484,7 +468,7 @@ func (m *Manager) finalizeTorrentMetadata(ctx context.Context, id string, t *tor
 	rec.InfoBytes = infoBytes
 	rec.OriginalName = t.Name()
 	rec.Name = t.Name()
-	rec.Status = "waiting_files_selection"
+	rec.Status = string(StatusWaitingFileSelection)
 
 	var originalBytes int64
 	var files []storage.TorrentFileRecord
@@ -512,7 +496,11 @@ func (m *Manager) finalizeTorrentMetadata(ctx context.Context, id string, t *tor
 		return
 	}
 
-	go m.autoSelectAfterDelay(id)
+	if fileID := m.lifecycle.PickSingleObviousVideo(files); fileID != 0 {
+		_ = m.SelectFiles(ctx, id, fmt.Sprintf("%d", fileID))
+	} else {
+		go m.autoSelectAfterDelay(id)
+	}
 
 	m.trackTorrent(id, t)
 }
@@ -521,14 +509,14 @@ func (m *Manager) processMagnet(id, magnet string) {
 	ctx := context.Background()
 	t, err := m.client.AddMagnet(magnet)
 	if err != nil {
-		m.setError(ctx, id, "magnet_error")
+		m.setError(ctx, id, string(StatusMagnetError))
 		return
 	}
 
 	m.registerRuntimeTorrent(id, t)
 
 	if !m.waitTorrentInfo(t) {
-		m.setError(ctx, id, "magnet_error")
+		m.setError(ctx, id, string(StatusMagnetError))
 		m.dropRuntimeTorrent(id, t)
 		return
 	}
@@ -540,14 +528,14 @@ func (m *Manager) processTorrentMetainfo(id string, mi *metainfo.MetaInfo) {
 	ctx := context.Background()
 	t, err := m.client.AddTorrent(mi)
 	if err != nil {
-		m.setError(ctx, id, "magnet_error")
+		m.setError(ctx, id, string(StatusMagnetError))
 		return
 	}
 
 	m.registerRuntimeTorrent(id, t)
 
 	if !m.waitTorrentInfo(t) {
-		m.setError(ctx, id, "magnet_error")
+		m.setError(ctx, id, string(StatusMagnetError))
 		m.dropRuntimeTorrent(id, t)
 		return
 	}
@@ -563,11 +551,11 @@ func (m *Manager) autoSelectAfterDelay(id string) {
 
 	ctx := context.Background()
 	rec, err := m.db.GetTorrent(ctx, id)
-	if err != nil || rec.Status != "waiting_files_selection" {
+	if err != nil || rec.Status != string(StatusWaitingFileSelection) {
 		return
 	}
 
-	best := pickLargestVideo(rec.Files)
+	best := m.lifecycle.PickLargestVideo(rec.Files)
 	if best == 0 {
 		return
 	}
@@ -597,7 +585,7 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 			prevFiles := cloneFileDownloaded(rec.Files)
 
 			m.syncRuntimeState(rec, t)
-			if rec.Status == "downloaded" || m.isStreamable(rec) {
+			if m.lifecycle.LinksVisible(rec) {
 				m.refreshStreamLinks(ctx, rec)
 			}
 
@@ -637,8 +625,8 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 				m.maybeOffloadCompletedFiles(ctx, rec)
 			}
 
-			if rec.Status == "downloaded" {
-				if prevStatus != "downloaded" {
+			if rec.Status == string(StatusDownloaded) {
+				if prevStatus != string(StatusDownloaded) {
 					m.fireDownloadComplete(rec.Name)
 					go m.offloadTorrent(context.Background(), rec.ID)
 				}
@@ -660,8 +648,26 @@ func (m *Manager) syncRuntimeFiles(t *torrent.Torrent, rec *storage.TorrentRecor
 		}
 		f := tfiles[idx]
 		rec.Files[i].DownloadedBytes = f.BytesCompleted()
+		rec.Files[i].StreamableBytes = streamablePrefixBytes(f)
 		rec.Files[i].DiskPath = filepath.Join(m.filesDir, rec.InfoHash, filepath.FromSlash(f.Path()))
 	}
+}
+
+func streamablePrefixBytes(f *torrent.File) int64 {
+	if f == nil {
+		return 0
+	}
+	var ready int64
+	for _, state := range f.State() {
+		if !state.Complete {
+			break
+		}
+		ready += state.Bytes
+		if ready >= f.Length() {
+			return f.Length()
+		}
+	}
+	return ready
 }
 
 func (m *Manager) applySelection(torrentID string, t *torrent.Torrent, files []storage.TorrentFileRecord) {
@@ -691,18 +697,18 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 	rt := m.active[rec.ID]
 	m.mu.RUnlock()
 	if rt == nil {
-		if rec.Status == "downloaded" || m.isStreamable(rec) {
+		if m.lifecycle.LinksVisible(rec) {
 			m.refreshStreamLinks(ctx, rec)
 		}
 		return
 	}
 
 	if rt.t.Info() == nil {
-		if isFailedTorrentStatus(rec.Status) || rec.Status == "downloaded" {
+		if isFailedTorrentStatus(rec.Status) || rec.Status == string(StatusDownloaded) {
 			return
 		}
-		if rec.Status != "magnet_conversion" {
-			rec.Status = "magnet_conversion"
+		if rec.Status != string(StatusMagnetConversion) {
+			rec.Status = string(StatusMagnetConversion)
 			_ = m.db.UpdateTorrent(ctx, *rec)
 		}
 		return
@@ -723,7 +729,7 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 	filesChanged := filesDownloadedChanged(prevFiles, rec.Files)
 
 	if statusChanged || progressChanged || filesChanged {
-		if rec.Status == "downloaded" || m.isStreamable(rec) {
+		if m.lifecycle.LinksVisible(rec) {
 			m.refreshStreamLinks(ctx, rec)
 		}
 		_ = m.db.UpdateTorrentFiles(ctx, rec.ID, rec.Files)
@@ -731,11 +737,11 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 		if filesChanged {
 			m.maybeOffloadCompletedFiles(ctx, rec)
 		}
-		if prevStatus != "downloaded" && rec.Status == "downloaded" {
+		if prevStatus != string(StatusDownloaded) && rec.Status == string(StatusDownloaded) {
 			m.fireDownloadComplete(rec.Name)
 			go m.offloadTorrent(context.Background(), rec.ID)
 		}
-	} else if rec.Status == "downloaded" || m.isStreamable(rec) {
+	} else if m.lifecycle.LinksVisible(rec) {
 		m.refreshStreamLinks(ctx, rec)
 	}
 }
@@ -751,34 +757,37 @@ func (m *Manager) syncRuntimeState(rec *storage.TorrentRecord, t *torrent.Torren
 	if total > 0 {
 		rec.Progress = int(completed * 100 / total)
 	}
-	if completed >= total && total > 0 {
-		rec.Status = "downloaded"
-		rec.Progress = 100
-		if rec.EndedAt == nil {
-			now := time.Now().UTC()
-			rec.EndedAt = &now
-		}
-	} else if rec.Status != "waiting_files_selection" && rec.Status != "magnet_conversion" {
-		rec.Status = "downloading"
-	}
 	stats := t.Stats()
-	rec.Seeders = stats.ActivePeers
+	m.lifecycle.ApplyRuntimeSnapshot(rec, RuntimeSnapshot{
+		TotalBytes:     total,
+		CompletedBytes: completed,
+		Seeders:        stats.ActivePeers,
+		Now:            time.Now().UTC(),
+	})
 }
 
-func cloneFileDownloaded(files []storage.TorrentFileRecord) []int64 {
-	out := make([]int64, len(files))
+type fileProgressSnapshot struct {
+	downloaded int64
+	streamable int64
+}
+
+func cloneFileDownloaded(files []storage.TorrentFileRecord) []fileProgressSnapshot {
+	out := make([]fileProgressSnapshot, len(files))
 	for i, f := range files {
-		out[i] = f.DownloadedBytes
+		out[i] = fileProgressSnapshot{
+			downloaded: f.DownloadedBytes,
+			streamable: f.StreamableBytes,
+		}
 	}
 	return out
 }
 
-func filesDownloadedChanged(prev []int64, files []storage.TorrentFileRecord) bool {
+func filesDownloadedChanged(prev []fileProgressSnapshot, files []storage.TorrentFileRecord) bool {
 	if len(prev) != len(files) {
 		return true
 	}
 	for i, f := range files {
-		if prev[i] != f.DownloadedBytes {
+		if prev[i].downloaded != f.DownloadedBytes || prev[i].streamable != f.StreamableBytes {
 			return true
 		}
 	}
@@ -795,7 +804,7 @@ func absInt(n int) int {
 func (m *Manager) ensureHostLinks(ctx context.Context, rec *storage.TorrentRecord) {
 	var linkIDs []string
 	for _, f := range rec.Files {
-		if !f.Selected {
+		if !m.lifecycle.FileLinksVisible(rec, f) {
 			continue
 		}
 		linkID, err := m.db.GetHostLinkByTorrentFile(ctx, rec.ID, f.ID)
@@ -834,14 +843,14 @@ func (m *Manager) resumeOne(rec storage.TorrentRecord) {
 
 	t, err := m.client.AddMagnet(rec.Magnet)
 	if err != nil {
-		m.setError(ctx, rec.ID, "magnet_error")
+		m.setError(ctx, rec.ID, string(StatusMagnetError))
 		return
 	}
 
 	m.registerRuntimeTorrent(rec.ID, t)
 
 	if !m.waitTorrentInfo(t) {
-		m.setError(ctx, rec.ID, "magnet_error")
+		m.setError(ctx, rec.ID, string(StatusMagnetError))
 		m.dropRuntimeTorrent(rec.ID, t)
 		return
 	}
@@ -854,7 +863,7 @@ func (m *Manager) resumeOne(rec storage.TorrentRecord) {
 	go m.trackTorrent(rec.ID, t)
 
 	updated, err := m.db.GetTorrent(ctx, rec.ID)
-	if err == nil && updated.Status == "waiting_files_selection" {
+	if err == nil && updated.Status == string(StatusWaitingFileSelection) {
 		go m.autoSelectAfterDelay(updated.ID)
 	}
 }
@@ -879,9 +888,9 @@ func (m *Manager) replaceTorrentFiles(ctx context.Context, torrentID string, fil
 			remoteStored = 1
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			f.ID, torrentID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.DiskPath, f.ObjectKey, remoteStored,
+			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, streamable_bytes, disk_path, object_key, remote_stored)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.ID, torrentID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.StreamableBytes, f.DiskPath, f.ObjectKey, remoteStored,
 		); err != nil {
 			return err
 		}
@@ -925,7 +934,7 @@ func (m *Manager) backgroundLoop() {
 }
 
 func (m *Manager) reconcileStaleMagnetConversion(ctx context.Context, rec storage.TorrentRecord, now time.Time) bool {
-	if rec.Status != "magnet_conversion" {
+	if rec.Status != string(StatusMagnetConversion) {
 		return false
 	}
 
@@ -939,13 +948,13 @@ func (m *Manager) reconcileStaleMagnetConversion(ctx context.Context, rec storag
 		if now.Sub(rt.startedAt) <= magnetMetadataTimeout+magnetMetadataStaleGrace {
 			return true
 		}
-		m.setError(ctx, rec.ID, "magnet_error")
+		m.setError(ctx, rec.ID, string(StatusMagnetError))
 		m.dropRuntimeTorrent(rec.ID, rt.t)
 		return true
 	}
 
 	if isPlaceholderMagnetConversion(rec) && !rec.AddedAt.IsZero() && now.Sub(rec.AddedAt) > magnetMetadataTimeout+magnetMetadataStaleGrace {
-		m.setError(ctx, rec.ID, "magnet_error")
+		m.setError(ctx, rec.ID, string(StatusMagnetError))
 		return true
 	}
 
@@ -967,7 +976,7 @@ func (m *Manager) enforceSeedingLimits(ctx context.Context) {
 
 	for id, rt := range m.active {
 		rec, err := m.db.GetTorrent(ctx, id)
-		if err != nil || rec.Status != "downloaded" {
+		if err != nil || rec.Status != string(StatusDownloaded) {
 			continue
 		}
 		if !m.shouldStopSeeding(rt.t, rec) {
@@ -1027,12 +1036,13 @@ func (m *Manager) selectedCompleted(rec *storage.TorrentRecord) int64 {
 }
 
 type Stats struct {
-	DiskUsed      int64
-	DiskQuota     int64
-	TorrentCount  int
-	ActiveCount   int
-	DownloadSpeed int64
-	StatusCounts  map[string]int
+	DiskUsed        int64
+	DiskQuota       int64
+	TorrentCount    int
+	ActiveCount     int
+	DownloadSpeed   int64
+	StatusCounts    map[string]int
+	LifecycleCounts map[string]int
 }
 
 func (m *Manager) FilesDir() string {
@@ -1142,12 +1152,13 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	}
 
 	return Stats{
-		DiskUsed:      used,
-		DiskQuota:     m.diskQuotaBytes(),
-		TorrentCount:  total,
-		ActiveCount:   active,
-		DownloadSpeed: totalSpeed,
-		StatusCounts:  statusCounts,
+		DiskUsed:        used,
+		DiskQuota:       m.diskQuotaBytes(),
+		TorrentCount:    total,
+		ActiveCount:     active,
+		DownloadSpeed:   totalSpeed,
+		StatusCounts:    statusCounts,
+		LifecycleCounts: m.lifecycle.CountsByGroup(statusCounts),
 	}, nil
 }
 
@@ -1197,11 +1208,16 @@ func (m *Manager) PurgeByStatus(ctx context.Context, filter string) (int, error)
 	var statuses []string
 	switch filter {
 	case "completed":
-		statuses = []string{"downloaded"}
+		statuses = []string{string(StatusDownloaded)}
 	case "failed":
-		statuses = []string{"error", "dead", "magnet_error"}
+		statuses = []string{string(StatusError), string(StatusDead), string(StatusMagnetError)}
 	case "active":
-		statuses = []string{"downloading", "queued", "waiting_files_selection", "magnet_conversion"}
+		statuses = []string{
+			string(StatusDownloading),
+			string(StatusQueued),
+			string(StatusWaitingFileSelection),
+			string(StatusMagnetConversion),
+		}
 	default:
 		return 0, fmt.Errorf("unknown filter: %s", filter)
 	}
@@ -1248,7 +1264,7 @@ func (m *Manager) Retry(ctx context.Context, torrentID string) error {
 }
 
 func isFailedTorrentStatus(status string) bool {
-	return status == "error" || status == "magnet_error" || status == "dead"
+	return IsFailedStatus(status)
 }
 
 func (m *Manager) AddTorrentFile(ctx context.Context, data []byte) (*storage.TorrentRecord, error) {
@@ -1273,7 +1289,7 @@ func (m *Manager) AddTorrentFile(ctx context.Context, data []byte) (*storage.Tor
 
 	if existing, err := m.db.GetTorrentByHash(ctx, infoHash); err == nil && existing != nil {
 		m.refreshProgress(ctx, existing)
-		if existing.Status == "downloaded" {
+		if existing.Status == string(StatusDownloaded) {
 			m.ensureHostLinks(ctx, existing)
 		}
 		return existing, nil
@@ -1295,7 +1311,7 @@ func (m *Manager) AddTorrentFile(ctx context.Context, data []byte) (*storage.Tor
 		Magnet:       magnet,
 		Name:         info.Name,
 		OriginalName: info.Name,
-		Status:       "magnet_conversion",
+		Status:       string(StatusMagnetConversion),
 		InfoBytes:    infoBuf.Bytes(),
 		AddedAt:      time.Now().UTC(),
 	}
@@ -1322,51 +1338,6 @@ func infoHashFromMagnet(magnet string) (string, error) {
 		return "", err
 	}
 	return mi.InfoHash.HexString(), nil
-}
-
-func parseFilesSpec(spec string, fileCount int) ([]int, error) {
-	spec = strings.TrimSpace(spec)
-	if spec == "" {
-		return nil, fmt.Errorf("empty files spec")
-	}
-	if strings.EqualFold(spec, "all") {
-		ids := make([]int, fileCount)
-		for i := range ids {
-			ids[i] = i + 1
-		}
-		return ids, nil
-	}
-	parts := strings.Split(spec, ",")
-	var ids []int
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		var id int
-		if _, err := fmt.Sscanf(part, "%d", &id); err != nil || id < 1 || id > fileCount {
-			return nil, fmt.Errorf("invalid file id: %s", part)
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
-}
-
-func pickLargestVideo(files []storage.TorrentFileRecord) int {
-	exts := map[string]bool{".mkv": true, ".mp4": true, ".avi": true, ".m4v": true, ".webm": true}
-	var bestID int
-	var bestSize int64
-	for _, f := range files {
-		ext := strings.ToLower(filepath.Ext(f.Path))
-		if !exts[ext] {
-			continue
-		}
-		if f.Bytes > bestSize {
-			bestSize = f.Bytes
-			bestID = f.ID
-		}
-	}
-	return bestID
 }
 
 func extractLinkID(hostLink string) string {

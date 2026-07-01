@@ -4,7 +4,8 @@ const fs = require('fs')
 
 const JACKETT_URL = (process.env.JACKETT_URL || 'http://jackett:9117').replace(/\/+$/, '')
 const JACKETT_CONFIG_FILE = process.env.JACKETT_CONFIG_FILE || '/jackett-config/Jackett/ServerConfig.json'
-const INDEXERS = (process.env.JACKETT_INDEXERS || 'limetorrents,therarbg,eztv,knaben,magnetz')
+const DEFAULT_INDEXERS = '1337x,knaben,limetorrents,magnetz,nyaasi,rutracker-ru,thepiratebay,therarbg,yts'
+const INDEXERS = (process.env.JACKETT_INDEXERS || DEFAULT_INDEXERS)
   .split(',')
   .map((name) => name.trim())
   .filter(Boolean)

@@ -3,142 +3,63 @@ import {
   addMagnet,
   deleteTorrent,
   deleteTorrents,
-  fetchTorrentDetail,
   fetchTorrents,
   retryTorrent,
   uploadTorrent,
   type Torrent,
-  type TorrentDetail,
 } from '../api';
-import Modal from '../components/Modal';
+import Icon from '../components/Icon';
+import { TopBarActions, TopBarMeta } from '../components/TopBar';
+import { useToast } from '../components/Toast';
 import { usePolling } from '../hooks/usePolling';
+import { formatRelativeTime } from '../lib/format';
 import {
-  basename,
-  formatBytes,
-  formatProgress,
-  formatRelativeTime,
-  formatSpeed,
-} from '../lib/format';
-import CopyButton from '../components/CopyButton';
+  matchesLifecycleFilter,
+  torrentLifecycle,
+  type TorrentFilter,
+} from '../lib/torrentLifecycle';
+import AddTorrentPanel from './torrents/AddTorrentPanel';
+import TorrentDetailModal from './torrents/TorrentDetailModal';
+import TorrentLifecycleSummary from './torrents/TorrentLifecycleSummary';
+import TorrentTable from './torrents/TorrentTable';
 
-type Filter = 'all' | 'active' | 'completed' | 'failed';
+type TorrentCounts = Record<TorrentFilter, number>;
 
-const ACTIVE_STATUSES = new Set([
-  'downloading',
-  'queued',
-  'waiting_files_selection',
-  'magnet_conversion',
-]);
-const COMPLETED_STATUSES = new Set(['downloaded']);
-const FAILED_STATUSES = new Set(['error', 'dead']);
+const FILTERS: { key: TorrentFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'active', label: 'Active' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'other', label: 'Other' },
+];
 
-function matchesFilter(torrent: Torrent, filter: Filter): boolean {
-  switch (filter) {
-    case 'active':
-      return ACTIVE_STATUSES.has(torrent.status);
-    case 'completed':
-      return COMPLETED_STATUSES.has(torrent.status);
-    case 'failed':
-      return FAILED_STATUSES.has(torrent.status);
-    default:
-      return true;
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
+function compareTorrents(a: Torrent, b: Torrent): number {
+  const lifecycleA = torrentLifecycle(a);
+  const lifecycleB = torrentLifecycle(b);
+  if (lifecycleA.sortRank !== lifecycleB.sortRank) {
+    return lifecycleA.sortRank - lifecycleB.sortRank;
   }
+  return new Date(b.added).getTime() - new Date(a.added).getTime();
 }
 
-function ProgressCell({ progress, status }: { progress: number; status: string }) {
-  const pct = Math.min(100, Math.max(0, progress));
-  const done = status === 'downloaded';
-
-  return (
-    <div className="progress-cell">
-      <div className="mini-bar" aria-hidden="true">
-        <div className="mini-bar-fill" style={{ width: `${done ? 100 : pct}%` }} />
-      </div>
-      <span>{done ? '100.0%' : formatProgress(progress)}</span>
-    </div>
-  );
-}
-
-function TorrentDetailModal({
-  torrent,
-  onClose,
-}: {
-  torrent: Torrent;
-  onClose: () => void;
-}) {
-  const [detail, setDetail] = useState<TorrentDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchTorrentDetail(torrent.id)
-      .then((d) => {
-        if (!cancelled) setDetail(d);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Load failed');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [torrent.id]);
-
-  const size = torrent.size > 0 ? torrent.size : torrent.bytes;
-
-  return (
-    <Modal title={torrent.name} onClose={onClose}>
-      <div className="detail-meta">
-        <span className={`status status-${torrent.status}`}>{torrent.status.replace(/_/g, ' ')}</span>
-        <span className="muted">{formatBytes(size)} · {torrent.hash}</span>
-      </div>
-
-      {loading && <p className="muted">Loading detail…</p>}
-      {error && <p className="error">{error}</p>}
-
-      {detail && (
-        <>
-          {detail.files.length > 0 && (
-            <div className="detail-section">
-              <h3>Files</h3>
-              <ul className="detail-file-list">
-                {detail.files.map((file) => (
-                  <li key={String(file.id)}>
-                    <span>{basename(file.path)}</span>
-                    <span className="muted">{formatBytes(file.bytes)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {detail.links.length > 0 && (
-            <div className="detail-section">
-              <h3>Links</h3>
-              <ul className="detail-link-list">
-                {detail.links.map((link) => (
-                  <li key={link}>
-                    <code className="url-value">{link}</code>
-                    <CopyButton value={link} label="Copy" />
-                  </li>
-                ))}
-              </ul>
-              <p className="muted hint-text">Signed download URLs expire — prefer host links for streaming.</p>
-            </div>
-          )}
-        </>
-      )}
-    </Modal>
+function countTorrents(torrents: Torrent[]): TorrentCounts {
+  return torrents.reduce<TorrentCounts>(
+    (counts, torrent) => {
+      counts.all += 1;
+      counts[torrentLifecycle(torrent).group] += 1;
+      return counts;
+    },
+    { all: 0, active: 0, completed: 0, failed: 0, other: 0 },
   );
 }
 
 export default function Torrents() {
-  const [filter, setFilter] = useState<Filter>('all');
+  const { toast } = useToast();
+  const [filter, setFilter] = useState<TorrentFilter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [magnet, setMagnet] = useState('');
@@ -150,25 +71,30 @@ export default function Torrents() {
   const loader = useCallback(() => fetchTorrents(), []);
   const { data: torrents, error, loading, updatedAt, refresh } = usePolling(loader);
 
-  const filtered = useMemo(() => {
-    const items = torrents ?? [];
-    return items
-      .filter((t) => matchesFilter(t, filter))
-      .sort((a, b) => new Date(b.added).getTime() - new Date(a.added).getTime());
-  }, [torrents, filter]);
-
-  const counts = useMemo(() => {
-    const items = torrents ?? [];
-    return {
-      all: items.length,
-      active: items.filter((t) => matchesFilter(t, 'active')).length,
-      completed: items.filter((t) => matchesFilter(t, 'completed')).length,
-      failed: items.filter((t) => matchesFilter(t, 'failed')).length,
-    };
+  useEffect(() => {
+    if (!torrents) return;
+    const liveIds = new Set(torrents.map((torrent) => torrent.id));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => liveIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
   }, [torrents]);
 
+  const filtered = useMemo(() => {
+    const items = torrents ?? [];
+    return items.filter((torrent) => matchesLifecycleFilter(torrent, filter)).sort(compareTorrents);
+  }, [torrents, filter]);
+
+  const counts = useMemo(() => countTorrents(torrents ?? []), [torrents]);
+  const selectedFilteredIds = useMemo(
+    () => [...selected].filter((id) => filtered.some((torrent) => torrent.id === id)),
+    [filtered, selected],
+  );
   const allFilteredSelected =
-    filtered.length > 0 && filtered.every((t) => selected.has(t.id));
+    filtered.length > 0 && filtered.every((torrent) => selected.has(torrent.id));
+  const visibleFilters = FILTERS.filter(
+    (item) => item.key !== 'other' || counts.other > 0 || filter === 'other',
+  );
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -180,19 +106,15 @@ export default function Torrents() {
   }
 
   function toggleSelectAll() {
-    if (allFilteredSelected) {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        filtered.forEach((t) => next.delete(t.id));
-        return next;
-      });
-    } else {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        filtered.forEach((t) => next.add(t.id));
-        return next;
-      });
-    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        filtered.forEach((torrent) => next.delete(torrent.id));
+      } else {
+        filtered.forEach((torrent) => next.add(torrent.id));
+      }
+      return next;
+    });
   }
 
   async function handleDelete(id: string) {
@@ -206,29 +128,34 @@ export default function Torrents() {
         return next;
       });
       await refresh();
+      toast('Torrent deleted');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Delete failed');
+      toast(errorMessage(err, 'Delete failed'), 'error');
     } finally {
       setBusyId(null);
     }
   }
 
   async function handleDeleteSelected() {
-    const ids = [...selected].filter((id) => filtered.some((t) => t.id === id));
+    const ids = selectedFilteredIds;
     if (ids.length === 0) return;
     if (!confirm(`Delete ${ids.length} selected torrent(s) and their files?`)) return;
 
     setBusyId('bulk');
     try {
       const result = await deleteTorrents(ids);
-      setSelected(new Set());
-      await refresh();
       const failed = result.failed ?? [];
+      setSelected(new Set(failed));
+      await refresh();
+
+      if (result.deleted > 0) {
+        toast(`Deleted ${result.deleted} torrent${result.deleted === 1 ? '' : 's'}`);
+      }
       if (failed.length > 0) {
-        alert(`Deleted ${result.deleted}; failed to delete ${failed.length} torrent(s).`);
+        toast(`Failed to delete ${failed.length} torrent${failed.length === 1 ? '' : 's'}`, 'error');
       }
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Delete failed');
+      toast(errorMessage(err, 'Delete failed'), 'error');
     } finally {
       setBusyId(null);
     }
@@ -239,15 +166,16 @@ export default function Torrents() {
     try {
       await retryTorrent(id);
       await refresh();
+      toast('Retry queued');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Retry failed');
+      toast(errorMessage(err, 'Retry failed'), 'error');
     } finally {
       setBusyId(null);
     }
   }
 
-  async function handleAddMagnet(e: FormEvent) {
-    e.preventDefault();
+  async function handleAddMagnet(event: FormEvent) {
+    event.preventDefault();
     const trimmed = magnet.trim();
     if (!trimmed) return;
 
@@ -257,8 +185,11 @@ export default function Torrents() {
       await addMagnet(trimmed);
       setMagnet('');
       await refresh();
+      toast('Magnet added');
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : 'Add magnet failed');
+      const message = errorMessage(err, 'Add magnet failed');
+      setAddError(message);
+      toast(message, 'error');
     } finally {
       setAddBusy(false);
     }
@@ -270,8 +201,11 @@ export default function Torrents() {
     try {
       await uploadTorrent(file);
       await refresh();
+      toast('Torrent uploaded');
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : 'Upload failed');
+      const message = errorMessage(err, 'Upload failed');
+      setAddError(message);
+      toast(message, 'error');
     } finally {
       setAddBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -279,54 +213,36 @@ export default function Torrents() {
   }
 
   if (loading && !torrents) {
-    return <p className="muted page-loading">Loading torrents…</p>;
+    return <p className="muted page-loading">Loading torrents...</p>;
   }
 
   return (
-    <div className="torrents">
-      <form className="add-torrent-bar card" onSubmit={handleAddMagnet}>
-        <label htmlFor="magnet-input" className="config-label">
-          Add magnet
-        </label>
-        <div className="add-torrent-row">
-          <textarea
-            id="magnet-input"
-            className="magnet-input"
-            value={magnet}
-            onChange={(e) => setMagnet(e.target.value)}
-            placeholder="magnet:?xt=urn:btih:…"
-            rows={2}
-          />
-          <div className="add-torrent-actions">
-            <button type="submit" className="btn btn-primary" disabled={addBusy || !magnet.trim()}>
-              {addBusy ? 'Adding…' : 'Add magnet'}
-            </button>
-            <label className="btn btn-secondary upload-label">
-              Upload .torrent
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".torrent,application/x-bittorrent"
-                hidden
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleUpload(file);
-                }}
-              />
-            </label>
-          </div>
-        </div>
-        {addError && <p className="error">{addError}</p>}
-      </form>
+    <div className="page torrents">
+      <TopBarMeta>
+        {updatedAt ? `updated ${formatRelativeTime(updatedAt)}` : ''}
+      </TopBarMeta>
+      <TopBarActions>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
+          <Icon name="rotate-cw" size={14} />
+          Refresh
+        </button>
+      </TopBarActions>
 
-      <div className="page-toolbar">
+      <AddTorrentPanel
+        magnet={magnet}
+        busy={addBusy}
+        error={addError}
+        fileInputRef={fileInputRef}
+        onMagnetChange={setMagnet}
+        onSubmit={handleAddMagnet}
+        onUpload={handleUpload}
+      />
+
+      <TorrentLifecycleSummary torrents={torrents ?? []} />
+
+      <div className="page-toolbar torrents-toolbar">
         <div className="filter-tabs" role="tablist" aria-label="Torrent filters">
-          {([
-            ['all', 'All'],
-            ['active', 'Active'],
-            ['completed', 'Completed'],
-            ['failed', 'Failed'],
-          ] as const).map(([key, label]) => (
+          {visibleFilters.map(({ key, label }) => (
             <button
               key={key}
               type="button"
@@ -342,22 +258,16 @@ export default function Torrents() {
         </div>
 
         <div className="toolbar-actions">
-          {selected.size > 0 && (
+          {selectedFilteredIds.length > 0 && (
             <button
               type="button"
               className="btn btn-danger btn-sm"
               disabled={busyId === 'bulk'}
               onClick={handleDeleteSelected}
             >
-              Delete selected ({selected.size})
+              Delete selected ({selectedFilteredIds.length})
             </button>
           )}
-          {updatedAt && (
-            <span className="muted toolbar-meta">Updated {formatRelativeTime(updatedAt)}</span>
-          )}
-          <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
-            Refresh
-          </button>
         </div>
       </div>
 
@@ -369,85 +279,17 @@ export default function Torrents() {
           <p className="muted">Add a magnet above or streams from Stremio will appear here.</p>
         </div>
       ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th className="checkbox-col">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all"
-                    checked={allFilteredSelected}
-                    onChange={toggleSelectAll}
-                  />
-                </th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Progress</th>
-                <th>Size</th>
-                <th>Speed</th>
-                <th>Added</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((t) => {
-                const size = t.size > 0 ? t.size : t.bytes;
-                const showSpeed = t.speed > 0 && ACTIVE_STATUSES.has(t.status);
-
-                return (
-                  <tr
-                    key={t.id}
-                    className="clickable-row"
-                    onClick={() => setDetailTorrent(t)}
-                  >
-                    <td className="checkbox-col" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${t.name}`}
-                        checked={selected.has(t.id)}
-                        onChange={() => toggleSelect(t.id)}
-                      />
-                    </td>
-                    <td className="name-cell" title={t.name}>
-                      <span className="name-primary">{t.name}</span>
-                      <span className="name-meta muted">{t.hash.slice(0, 12)}…</span>
-                    </td>
-                    <td>
-                      <span className={`status status-${t.status}`}>{t.status.replace(/_/g, ' ')}</span>
-                    </td>
-                    <td>
-                      <ProgressCell progress={t.progress} status={t.status} />
-                    </td>
-                    <td>{formatBytes(size)}</td>
-                    <td>{showSpeed ? formatSpeed(t.speed) : '—'}</td>
-                    <td className="muted">{formatRelativeTime(t.added)}</td>
-                    <td className="actions-cell" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        className="btn btn-danger btn-sm"
-                        disabled={busyId === t.id}
-                        onClick={() => handleDelete(t.id)}
-                      >
-                        Delete
-                      </button>
-                      {FAILED_STATUSES.has(t.status) && (
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          disabled={busyId === t.id}
-                          onClick={() => handleRetry(t.id)}
-                        >
-                          Retry
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <TorrentTable
+          torrents={filtered}
+          selected={selected}
+          busyId={busyId}
+          allSelected={allFilteredSelected}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          onOpenDetail={setDetailTorrent}
+          onDelete={handleDelete}
+          onRetry={handleRetry}
+        />
       )}
 
       {detailTorrent && (

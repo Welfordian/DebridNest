@@ -2,6 +2,9 @@ package torrent
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -62,6 +65,134 @@ func clearObjectStoreEnv(t *testing.T) {
 		"DEBRIDNEST_S3_EARLY_OFFLOAD",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestFilesDownloadedChangedIncludesStreamableBytes(t *testing.T) {
+	prev := cloneFileDownloaded([]storage.TorrentFileRecord{
+		{ID: 1, DownloadedBytes: 64, StreamableBytes: 0},
+	})
+
+	if !filesDownloadedChanged(prev, []storage.TorrentFileRecord{
+		{ID: 1, DownloadedBytes: 64, StreamableBytes: 32},
+	}) {
+		t.Fatal("filesDownloadedChanged returned false when streamable bytes changed")
+	}
+}
+
+func TestEnsureHostLinksOnlyIncludesReadyIncompleteFiles(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	minStreamBytes := manager.cfg.MinStreamBytes()
+	rec := storage.TorrentRecord{
+		ID:       "LINKS001",
+		InfoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Magnet:   "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Status:   string(StatusDownloading),
+		AddedAt:  now,
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, Path: "/ready.mkv", Bytes: minStreamBytes + 100, Selected: true, StreamableBytes: minStreamBytes},
+			{ID: 2, Path: "/later.mkv", Bytes: minStreamBytes + 100, Selected: true, StreamableBytes: minStreamBytes - 1},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+	got, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get torrent: %v", err)
+	}
+
+	manager.ensureHostLinks(ctx, got)
+	if len(got.Links) != 1 {
+		t.Fatalf("links = %+v, want only ready file link", got.Links)
+	}
+	readyLinkID, err := db.GetHostLinkByTorrentFile(ctx, rec.ID, 1)
+	if err != nil {
+		t.Fatalf("ready host link: %v", err)
+	}
+	if got.Links[0] != manager.signer.HostLink(readyLinkID) {
+		t.Fatalf("link = %q, want ready file link", got.Links[0])
+	}
+	if _, err := db.GetHostLinkByTorrentFile(ctx, rec.ID, 2); err == nil {
+		t.Fatal("unready file unexpectedly received a host link")
+	}
+}
+
+func TestUnrestrictRejectsUnreadyHostLink(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	minStreamBytes := manager.cfg.MinStreamBytes()
+	rec := storage.TorrentRecord{
+		ID:       "LINKS002",
+		InfoHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Magnet:   "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Status:   string(StatusDownloading),
+		AddedAt:  now,
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, Path: "/later.mkv", Bytes: minStreamBytes + 100, Selected: true, StreamableBytes: minStreamBytes - 1},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+	if err := db.UpsertHostLink(ctx, "STALELINK", rec.ID, 1, now); err != nil {
+		t.Fatalf("seed stale host link: %v", err)
+	}
+
+	_, err := manager.Unrestrict(ctx, manager.signer.HostLink("STALELINK"))
+	if !errors.Is(err, ErrStreamNotReady) {
+		t.Fatalf("Unrestrict error = %v, want ErrStreamNotReady", err)
+	}
+}
+
+func TestOpenServingReaderRejectsRangePastStreamablePrefixWithoutRuntime(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	hash := "cccccccccccccccccccccccccccccccccccccccc"
+	diskPath := filepath.Join(manager.filesDir, hash, "movie.mkv")
+	minStreamBytes := manager.cfg.MinStreamBytes()
+	fileSize := minStreamBytes + 100
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0o755); err != nil {
+		t.Fatalf("create torrent dir: %v", err)
+	}
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatalf("create test file: %v", err)
+	}
+	if err := f.Truncate(fileSize); err != nil {
+		_ = f.Close()
+		t.Fatalf("truncate test file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close test file: %v", err)
+	}
+
+	rec := storage.TorrentRecord{
+		ID:       "RANGE001",
+		InfoHash: hash,
+		Magnet:   "magnet:?xt=urn:btih:" + hash,
+		Status:   string(StatusDownloading),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, Path: "/movie.mkv", Bytes: fileSize, Selected: true, DownloadedBytes: fileSize, StreamableBytes: minStreamBytes, DiskPath: diskPath},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+
+	reader, _, _, err := manager.OpenServingReader(ctx, rec.ID, 1, StreamOptions{StartOffset: 0})
+	if err != nil {
+		t.Fatalf("OpenServingReader start=0: %v", err)
+	}
+	_ = reader.Close()
+
+	_, _, _, err = manager.OpenServingReader(ctx, rec.ID, 1, StreamOptions{StartOffset: minStreamBytes + 1})
+	if !errors.Is(err, ErrStreamNotReady) {
+		t.Fatalf("OpenServingReader past prefix error = %v, want ErrStreamNotReady", err)
 	}
 }
 

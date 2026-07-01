@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { copyText } from '../lib/copy';
+import Icon from './Icon';
 
 export default function CopyButton({
   value,
@@ -16,13 +17,18 @@ export default function CopyButton({
     const ok = await copyText(value);
     if (ok) {
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      window.setTimeout(() => setCopied(false), 1600);
     }
   }
 
   return (
-    <button type="button" className={`copy-btn ${className}`.trim()} onClick={handleCopy} disabled={!value}>
-      {copied ? 'Copied!' : label}
+    <button type="button" className={className} onClick={handleCopy} disabled={!value}>
+      <Icon
+        name={copied ? 'check' : 'copy'}
+        size={14}
+        style={copied ? { color: 'var(--success)' } : undefined}
+      />
+      {copied ? 'Copied' : label}
     </button>
   );
 }

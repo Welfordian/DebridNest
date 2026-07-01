@@ -18,7 +18,16 @@ function touchJob(job) {
   job.expiresAt = Date.now() + TTL_MS
 }
 
-function createJob({ torrentId, magnet, torrentLink, apiUrl, apiToken, label }) {
+function createJob({
+  torrentId,
+  magnet,
+  torrentLink,
+  apiUrl,
+  apiToken,
+  label,
+  season,
+  episode,
+}) {
   const token = crypto.randomBytes(16).toString('hex')
   jobs.set(token, {
     torrentId: torrentId || null,
@@ -27,6 +36,8 @@ function createJob({ torrentId, magnet, torrentLink, apiUrl, apiToken, label }) 
     apiUrl,
     apiToken,
     label,
+    season: Number.isFinite(season) ? season : null,
+    episode: Number.isFinite(episode) ? episode : null,
     hostLink: null,
     downloadUrl: null,
     expiresAt: Date.now() + TTL_MS,

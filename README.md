@@ -77,7 +77,7 @@ docker compose --profile stremio up -d --build
 
 3. Configure Jackett (first time only):
 
-On first boot, **jackett-setup** automatically adds public indexers (`limetorrents`, `therarbg`, `eztv`, `knaben`, `magnetz`). Open `http://localhost:9117` to add more.
+On first boot, **jackett-setup** automatically adds public indexers (`1337x`, `knaben`, `limetorrents`, `magnetz`, `nyaasi`, `rutracker-ru`, `thepiratebay`, `therarbg`, `yts`). Open `http://localhost:9117` to add more.
 
 Verify:
 

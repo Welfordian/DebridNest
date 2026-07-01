@@ -16,27 +16,20 @@ import (
 var ErrStreamNotReady = errors.New("stream not ready")
 
 type StreamOptions struct {
-	StartOffset int64
+	StartOffset   int64
+	RequestLength int64
 }
 
 func IsStreamable(rec *storage.TorrentRecord, minBytes int64) bool {
-	if rec == nil || minBytes <= 0 {
-		return false
-	}
-	for _, f := range rec.Files {
-		if f.Selected && f.DownloadedBytes >= minBytes {
-			return true
-		}
-	}
-	return false
+	return NewLifecycle(minBytes).Streamable(rec)
 }
 
 func (m *Manager) isStreamable(rec *storage.TorrentRecord) bool {
-	return IsStreamable(rec, m.cfg.MinStreamBytes())
+	return m.lifecycle.Streamable(rec)
 }
 
 func (m *Manager) refreshStreamLinks(ctx context.Context, rec *storage.TorrentRecord) {
-	if rec.Status == "downloaded" || rec.Status == "dead" || m.isStreamable(rec) {
+	if m.lifecycle.LinksVisible(rec) {
 		m.ensureHostLinks(ctx, rec)
 	}
 }
@@ -85,6 +78,9 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 	if file == nil || !file.Selected {
 		return nil, time.Time{}, 0, fmt.Errorf("file not found")
 	}
+	if rec.Status != string(StatusDownloaded) && !m.lifecycle.FileLinksVisible(rec, *file) {
+		return nil, time.Time{}, 0, ErrStreamNotReady
+	}
 
 	if file.RemoteStored {
 		store, err := m.objectStoreForSettings()
@@ -119,7 +115,7 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 		}
 	}
 
-	if rec.Status == "downloaded" {
+	if rec.Status == string(StatusDownloaded) {
 		f, err := os.Open(file.DiskPath)
 		if err != nil {
 			return nil, time.Time{}, 0, err
@@ -130,10 +126,6 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 			return nil, time.Time{}, 0, err
 		}
 		return f, st.ModTime(), file.Bytes, nil
-	}
-
-	if !m.isStreamable(rec) {
-		return nil, time.Time{}, 0, ErrStreamNotReady
 	}
 
 	readahead := m.cfg.StreamReadaheadBytes()
@@ -150,6 +142,7 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 	}
 
 	priorityStart := start
+	prioritySpan := readahead + preRoll
 	if start > 0 {
 		readahead = m.cfg.SeekReadaheadBytes()
 		preRoll = m.cfg.SeekPreRollBytes()
@@ -157,6 +150,10 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 		if priorityStart < 0 {
 			priorityStart = 0
 		}
+		prioritySpan = readahead + preRoll
+	}
+	if opts.RequestLength > 0 {
+		prioritySpan = opts.RequestLength + readahead + preRoll
 	}
 
 	m.mu.RLock()
@@ -171,7 +168,7 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 		}
 		tf := tfiles[idx]
 
-		m.prioritizeFileRange(rt.t, tf, priorityStart, readahead+preRoll)
+		m.prioritizeFileRange(rt.t, tf, priorityStart, prioritySpan)
 
 		r := tf.NewReader()
 		r.SetReadahead(readahead)
@@ -183,6 +180,10 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 			}
 		}
 		return r, time.Now(), tf.Length(), nil
+	}
+
+	if start >= file.StreamableBytes {
+		return nil, time.Time{}, 0, ErrStreamNotReady
 	}
 
 	f, err := os.Open(file.DiskPath)
@@ -226,6 +227,9 @@ func (m *Manager) prioritizeFileRange(t *torrent.Torrent, f *torrent.File, start
 	}
 
 	t.DownloadPieces(beginPiece, endPieceExclusive)
+	for i := beginPiece; i < endPieceExclusive; i++ {
+		t.Piece(i).SetPriority(torrent.PiecePriorityHigh)
+	}
 }
 
 func (m *Manager) prioritizeStreamStart(torrentID string, fileID int) {
@@ -242,5 +246,13 @@ func (m *Manager) prioritizeStreamStart(torrentID string, fileID int) {
 		return
 	}
 
-	m.prioritizeFileRange(rt.t, tfiles[idx], 0, m.cfg.StreamReadaheadBytes())
+	window := m.cfg.StreamReadaheadBytes()
+	m.prioritizeFileRange(rt.t, tfiles[idx], 0, window)
+	tailStart := tfiles[idx].Length() - window
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	if tailStart > 0 {
+		m.prioritizeFileRange(rt.t, tfiles[idx], tailStart, window)
+	}
 }

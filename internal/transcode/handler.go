@@ -61,7 +61,7 @@ func (h *handler) serveMaster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if rec.Status != "downloaded" {
+	if !torrent.IsCompletedStatus(rec.Status) {
 		http.Error(w, "file not ready", http.StatusServiceUnavailable)
 		return
 	}
@@ -105,7 +105,7 @@ func (h *handler) serveAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if rec.Status != "downloaded" {
+	if !torrent.IsCompletedStatus(rec.Status) {
 		http.Error(w, "file not ready", http.StatusServiceUnavailable)
 		return
 	}

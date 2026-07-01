@@ -18,7 +18,7 @@ func TestOpenRunsMigrationsOnce(t *testing.T) {
 		t.Fatalf("open fresh db: %v", err)
 	}
 	assertRecordedMigrations(t, db, want)
-	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored", "streamable_bytes")
 	if err := db.Close(); err != nil {
 		t.Fatalf("close fresh db: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestOpenRunsMigrationsOnce(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	assertRecordedMigrations(t, db, want)
-	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored", "streamable_bytes")
 }
 
 func TestOpenBootstrapsLegacyDatabaseWithObjectStorageColumns(t *testing.T) {
@@ -43,7 +43,7 @@ func TestOpenBootstrapsLegacyDatabaseWithObjectStorageColumns(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	assertRecordedMigrations(t, db, migrationNames(t))
-	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored", "streamable_bytes")
 }
 
 func TestOpenRepairsPartialLegacyObjectStorageMigration(t *testing.T) {
@@ -65,7 +65,7 @@ func TestOpenRepairsPartialLegacyObjectStorageMigration(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	assertRecordedMigrations(t, db, migrationNames(t))
-	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored", "streamable_bytes")
 }
 
 func TestFailedMagnetConversionsAreNotIncompleteOrActive(t *testing.T) {
@@ -100,6 +100,49 @@ func TestFailedMagnetConversionsAreNotIncompleteOrActive(t *testing.T) {
 	}
 	if active != 1 {
 		t.Fatalf("active count = %d, want 1", active)
+	}
+}
+
+func TestTorrentFileStreamableBytesRoundTrip(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := t.Context()
+	rec := TorrentRecord{
+		ID:       "ROUNDTRIP01",
+		InfoHash: "3333333333333333333333333333333333333333",
+		Magnet:   "magnet:?xt=urn:btih:3333333333333333333333333333333333333333",
+		Status:   "downloading",
+		AddedAt:  time.Now().UTC(),
+		Files: []TorrentFileRecord{
+			{ID: 1, Path: "/movie.mkv", Bytes: 100, Selected: true, DownloadedBytes: 64, StreamableBytes: 32},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+
+	got, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get torrent: %v", err)
+	}
+	if len(got.Files) != 1 || got.Files[0].StreamableBytes != 32 {
+		t.Fatalf("streamable bytes after create = %+v, want 32", got.Files)
+	}
+
+	got.Files[0].StreamableBytes = 48
+	if err := db.UpdateTorrentFiles(ctx, got.ID, got.Files); err != nil {
+		t.Fatalf("update files: %v", err)
+	}
+	got, err = db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get updated torrent: %v", err)
+	}
+	if got.Files[0].StreamableBytes != 48 {
+		t.Fatalf("streamable bytes after update = %d, want 48", got.Files[0].StreamableBytes)
 	}
 }
 

@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { fetchLogs } from '../api';
+import Icon from '../components/Icon';
+import { TopBarActions, TopBarMeta } from '../components/TopBar';
 import { usePolling } from '../hooks/usePolling';
+
+function logLevel(line: string): string {
+  const l = line.toLowerCase();
+  if (l.includes('error') || l.includes('err ')) return 'error';
+  if (l.includes('warn')) return 'warn';
+  if (l.includes('debug') || l.includes('dbg')) return 'debug';
+  return 'info';
+}
 
 export default function Logs() {
   const tailRef = useRef<HTMLPreElement>(null);
@@ -31,16 +41,17 @@ export default function Logs() {
   }
 
   return (
-    <div className="logs-page">
-      <div className="page-toolbar">
-        <p className="toolbar-meta muted">
-          {lines.length} line{lines.length === 1 ? '' : 's'}
-          {updatedAt && ` · updated ${updatedAt.toLocaleTimeString()}`}
-        </p>
+    <div className="page">
+      <TopBarMeta>
+        {lines.length} line{lines.length === 1 ? '' : 's'}
+        {updatedAt && ` · updated ${updatedAt.toLocaleTimeString()}`}
+      </TopBarMeta>
+      <TopBarActions>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
+          <Icon name="rotate-cw" size={14} />
           Refresh
         </button>
-      </div>
+      </TopBarActions>
 
       <div className="logs-tail card">
         {lines.length === 0 ? (
@@ -48,7 +59,7 @@ export default function Logs() {
         ) : (
           <pre ref={tailRef} className="logs-pre">
             {lines.map((line, index) => (
-              <span key={`${index}-${line.slice(0, 40)}`} className="log-line">
+              <span key={`${index}-${line.slice(0, 40)}`} className={`log-line log-${logLevel(line)}`}>
                 {line}
                 {'\n'}
               </span>

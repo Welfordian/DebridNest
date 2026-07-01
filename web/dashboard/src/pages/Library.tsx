@@ -8,10 +8,12 @@ import {
   type TorrentDetail,
 } from '../api';
 import CopyButton from '../components/CopyButton';
+import Icon from '../components/Icon';
+import StatusBadge from '../components/StatusBadge';
+import { TopBarActions, TopBarMeta } from '../components/TopBar';
 import { usePolling } from '../hooks/usePolling';
 import { basename, formatBytes, formatRelativeTime } from '../lib/format';
-
-const COMPLETED = 'downloaded';
+import { torrentLifecycle } from '../lib/torrentLifecycle';
 
 function webdavPath(hash: string, filePath: string): string {
   return `/${hash}/${basename(filePath)}`;
@@ -31,24 +33,19 @@ function FileRow({
   publicUrl: string;
 }) {
   const davPath = webdavPath(hash, filePath);
-  const webdavBase = publicUrl ? joinUrl(publicUrl.replace(/\/+$/, ''), '/webdav/') : '/webdav/';
   const fullWebdav = joinUrl(publicUrl.replace(/\/+$/, ''), `/webdav${davPath}`);
 
   return (
     <div className="library-file-row">
       <div className="library-file-info">
         <span className="library-file-name">{basename(filePath)}</span>
-        <span className="muted library-file-meta">{formatBytes(bytes)} · {filePath}</span>
+        <span className="library-file-meta">{formatBytes(bytes)} · {filePath}</span>
       </div>
       <div className="library-file-actions">
         <CopyButton value={davPath} label="WebDAV path" />
         {link && <CopyButton value={link} label="Host link" />}
         <CopyButton value={fullWebdav} label="WebDAV URL" />
       </div>
-      <p className="muted hint-text">
-        Signed download URLs expire — use host links or WebDAV for streaming. Infuse: add{' '}
-        <code>{webdavBase}</code> as a network source (Basic auth: debridnest + API token).
-      </p>
     </div>
   );
 }
@@ -89,25 +86,30 @@ function TorrentCard({
   }
 
   const size = torrent.size > 0 ? torrent.size : torrent.bytes;
+  const lifecycle = torrentLifecycle(torrent);
+  const webdavBase = publicUrl ? joinUrl(publicUrl.replace(/\/+$/, ''), '/webdav/') : '/webdav/';
 
   return (
-    <article className={`card library-card${expanded ? ' expanded' : ''}`}>
+    <article className="card library-card">
       <button type="button" className="library-card-header" onClick={handleToggle}>
-        <div className="library-card-title">
+        <span className="library-card-title">
           <span className="name-primary">{torrent.name}</span>
-          <span className="name-meta muted">
-            {formatBytes(size)} · {formatRelativeTime(torrent.ended ?? torrent.added)}
+          <span className="name-meta">
+            {formatBytes(size)} · {lifecycle.label} · {formatRelativeTime(torrent.ended ?? torrent.added)}
           </span>
-        </div>
-        <span className="library-expand">{expanded ? '▾' : '▸'}</span>
+        </span>
+        <span className="library-card-aside">
+          <StatusBadge torrent={torrent} />
+          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} />
+        </span>
       </button>
 
       {expanded && (
         <div className="library-card-body">
-          {loadingDetail && <p className="muted">Loading files…</p>}
-          {detailError && <p className="error">{detailError}</p>}
+          {loadingDetail && <p className="muted hint-text">Loading files…</p>}
+          {detailError && <p className="error hint-text">{detailError}</p>}
           {detail && detail.files.length === 0 && (
-            <p className="muted">No files listed for this torrent.</p>
+            <p className="muted hint-text">No files listed for this torrent.</p>
           )}
           {detail?.files.map((file, i) => (
             <FileRow
@@ -119,6 +121,12 @@ function TorrentCard({
               publicUrl={publicUrl}
             />
           ))}
+          {detail && detail.files.length > 0 && (
+            <p className="hint-text">
+              Signed download URLs expire — use host links or WebDAV for streaming. Infuse: add{' '}
+              <code>{webdavBase}</code> as a network source (Basic auth: debridnest + API token).
+            </p>
+          )}
         </div>
       )}
     </article>
@@ -138,7 +146,7 @@ export default function Library() {
   const completed = useMemo(() => {
     const items = data?.torrents ?? [];
     return items
-      .filter((t) => t.status === COMPLETED)
+      .filter((t) => torrentLifecycle(t).completed)
       .sort(
         (a, b) =>
           new Date(b.ended ?? b.added).getTime() - new Date(a.ended ?? a.added).getTime(),
@@ -150,18 +158,19 @@ export default function Library() {
   }
 
   return (
-    <div className="library">
-      <div className="page-toolbar">
-        <p className="muted toolbar-meta">
-          {completed.length} completed torrent{completed.length === 1 ? '' : 's'}
-          {updatedAt ? ` · updated ${formatRelativeTime(updatedAt)}` : ''}
-        </p>
+    <div className="page">
+      <TopBarMeta>
+        {completed.length} completed torrent{completed.length === 1 ? '' : 's'}
+        {updatedAt ? ` · updated ${formatRelativeTime(updatedAt)}` : ''}
+      </TopBarMeta>
+      <TopBarActions>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
+          <Icon name="rotate-cw" size={14} />
           Refresh
         </button>
-      </div>
+      </TopBarActions>
 
-      <p className="muted section-desc">
+      <p className="section-desc">
         Stream completed downloads via WebDAV. Infuse, Kodi, and rclone can browse{' '}
         <code>/webdav/</code> on your DebridNest host.
       </p>
@@ -170,6 +179,9 @@ export default function Library() {
 
       {completed.length === 0 ? (
         <div className="empty-state card">
+          <div className="empty-state-icon">
+            <Icon name="library" size={20} />
+          </div>
           <p>No completed torrents yet.</p>
           <p className="muted">Finished downloads appear here with WebDAV paths and stream links.</p>
         </div>

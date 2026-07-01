@@ -29,7 +29,7 @@ See [../docs/stremio-setup.md](../docs/stremio-setup.md) for full instructions.
 docker compose --profile stremio up -d
 ```
 
-By default, stream listing does not add magnets to DebridNest. Selecting a stream starts the download. Set `LIST_RESOLVE_COUNT` above `0` only to pre-resolve already-cached DebridNest items while listing.
+By default, stream listing returns placeholders and starts the top placeholder in DebridNest in the background. Set `PREWARM_COUNT=0` to disable listing-time startup, or raise it carefully to prewarm more returned placeholders. Set `LIST_RESOLVE_COUNT` above `0` only to pre-resolve already-cached DebridNest items into direct URLs while listing. `PROGRESS_POLL_MS` and `PLAY_POLL_MS` default to `1000`; `PLAY_WAIT_MS` defaults to `30000`.
 
 ## Debug
 

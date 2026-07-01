@@ -23,7 +23,7 @@ func (m *Manager) offloadTorrent(ctx context.Context, torrentID string) {
 	}
 
 	rec, err := m.db.GetTorrent(ctx, torrentID)
-	if err != nil || rec.Status != "downloaded" {
+	if err != nil || !IsCompletedStatus(rec.Status) {
 		return
 	}
 

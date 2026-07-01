@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/debridnest/debridnest/internal/storage"
+	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
 )
 
 const (
@@ -15,18 +16,18 @@ const (
 
 func mapStatus(rec *storage.TorrentRecord) string {
 	switch rec.Status {
-	case "magnet_conversion", "waiting_files_selection":
+	case string(torrentmgr.StatusMagnetConversion), string(torrentmgr.StatusWaitingFileSelection):
 		return "metaDL"
-	case "queued":
+	case string(torrentmgr.StatusQueued):
 		return "queuedDL"
-	case "downloading":
+	case string(torrentmgr.StatusDownloading):
 		if rec.Speed == 0 && rec.Progress < 100 {
 			return "stalledDL"
 		}
 		return "downloading"
-	case "downloaded":
+	case string(torrentmgr.StatusDownloaded):
 		return "pausedUP"
-	case "error", "magnet_error", "dead":
+	case string(torrentmgr.StatusError), string(torrentmgr.StatusMagnetError), string(torrentmgr.StatusDead):
 		return "error"
 	default:
 		return "downloading"
@@ -77,7 +78,7 @@ func etaSeconds(rec *storage.TorrentRecord) int64 {
 func toQBitTorrent(rec *storage.TorrentRecord, category string) map[string]any {
 	hash := normalizeHash(rec.InfoHash)
 	progress := float64(rec.Progress) / 100
-	if rec.Status == "downloaded" {
+	if torrentmgr.IsCompletedStatus(rec.Status) {
 		progress = 1
 	}
 
