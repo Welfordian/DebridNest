@@ -13,6 +13,7 @@ import (
 	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 	"github.com/debridnest/debridnest/internal/torrent"
@@ -76,7 +77,7 @@ func newTestHandler(t *testing.T) (*Handler, *torrent.Manager, *storage.DB) {
 	authSvc, settingsStore, activitySvc, db := newTestServices(t, cfg)
 
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
 	if err != nil {
 		t.Fatalf("manager: %v", err)
 	}
@@ -424,5 +425,43 @@ func TestDeleteSelfRejected(t *testing.T) {
 	h.Routes().ServeHTTP(delRec, delReq)
 	if delRec.Code != http.StatusBadRequest {
 		t.Fatalf("self-delete status = %d, body = %s", delRec.Code, delRec.Body.String())
+	}
+}
+
+func TestS3TestEndpointDisabled(t *testing.T) {
+	t.Setenv("DEBRIDNEST_S3_ENABLED", "")
+	h, _, _ := newTestHandler(t)
+
+	rec := serve(t, h, http.MethodPost, "/settings/s3-test", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestS3TestEndpointEnabledNoBucket(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+
+	patchRec := serve(t, h, http.MethodPatch, "/settings", []byte(`{"s3Enabled":true}`))
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	rec := serve(t, h, http.MethodPost, "/settings/s3-test", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestS3TestEndpointNilSettings(t *testing.T) {
+	cfg := testConfig()
+	authSvc, _, activitySvc, _ := newTestServices(t, cfg)
+	h := NewHandler(cfg, nil, nil, activitySvc, nil, authSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/s3-test", nil)
+	req.Header.Set("Authorization", authHeader(cfg.APIToken))
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }

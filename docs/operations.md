@@ -60,7 +60,8 @@ Admin-only routes also include purge, settings PATCH, activity log, and server l
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/settings` | Merged env defaults + runtime overrides |
-| PATCH | `/api/v1/settings` | Update retention, quota, rate limit, webhooks (admin) |
+| PATCH | `/api/v1/settings` | Update retention, quota, rate limit, webhooks, S3 (admin) |
+| POST | `/api/v1/settings/s3-test` | Validate S3 bucket connectivity (admin) |
 
 ### Activity and logs
 
@@ -91,7 +92,8 @@ All routes require `Authorization: Bearer <token>` (any valid user token in mult
 | POST | `/api/v1/maintenance/cleanup` | user | Run retention/quota cleanup now |
 | GET | `/api/v1/settings` | user | Merged env defaults + runtime overrides |
 | POST | `/api/v1/torrents/purge` | admin | Purge by status filter `{"filter"}` |
-| PATCH | `/api/v1/settings` | admin | Update retention, quota, rate limit, webhooks |
+| PATCH | `/api/v1/settings` | admin | Update retention, quota, rate limit, webhooks, S3 |
+| POST | `/api/v1/settings/s3-test` | admin | Validate S3 bucket connectivity |
 | GET | `/api/v1/activity` | admin | Audit log (`?limit=&offset=`) |
 | GET | `/api/v1/logs` | admin | Recent server log lines (`?limit=`) |
 
@@ -114,6 +116,57 @@ When enabled, DebridNest posts to all configured webhook targets. Events:
 
 - **Download complete** — torrent reaches `downloaded` status
 - **Quota warning** — disk usage exceeds configured quota during retention checks
+
+## Object storage (S3)
+
+S3 upload is **opt-in**. When enabled, DebridNest uploads each completed torrent file to an S3-compatible bucket after download finishes. Configure via environment variables or the dashboard **Settings → Object storage (S3)** section (admin).
+
+| Setting key | Env variable | Description |
+|-------------|--------------|-------------|
+| `s3Enabled` | `DEBRIDNEST_S3_ENABLED` | Enable uploads (`1` = on) |
+| `s3Endpoint` | `DEBRIDNEST_S3_ENDPOINT` | Custom endpoint URL (required for R2, B2, MinIO) |
+| `s3Bucket` | `DEBRIDNEST_S3_BUCKET` | Target bucket name |
+| `s3Region` | `DEBRIDNEST_S3_REGION` | Region (`auto` for R2/B2) |
+| `s3AccessKey` | `DEBRIDNEST_S3_ACCESS_KEY` | Access key ID |
+| `s3SecretKey` | `DEBRIDNEST_S3_SECRET_KEY` | Secret access key |
+| `s3Prefix` | `DEBRIDNEST_S3_PREFIX` | Key prefix (e.g. `debridnest/`) |
+| `s3ForcePathStyle` | `DEBRIDNEST_S3_FORCE_PATH_STYLE` | Path-style URLs (`1` = on; often needed for MinIO) |
+| `s3OffloadLocal` | `DEBRIDNEST_S3_OFFLOAD_LOCAL` | Delete local copy after successful upload (`1` = on) |
+
+Objects are stored at `{prefix}/{infohash}/{file-path}`. Use **Test connection** in the dashboard or:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/settings/s3-test
+```
+
+### Provider examples
+
+**Cloudflare R2**
+
+```env
+DEBRIDNEST_S3_ENABLED=1
+DEBRIDNEST_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+DEBRIDNEST_S3_BUCKET=my-bucket
+DEBRIDNEST_S3_REGION=auto
+DEBRIDNEST_S3_ACCESS_KEY=<r2-access-key-id>
+DEBRIDNEST_S3_SECRET_KEY=<r2-secret-access-key>
+DEBRIDNEST_S3_PREFIX=debridnest/
+```
+
+**Backblaze B2** (S3-compatible API)
+
+```env
+DEBRIDNEST_S3_ENABLED=1
+DEBRIDNEST_S3_ENDPOINT=https://s3.<region>.backblazeb2.com
+DEBRIDNEST_S3_BUCKET=my-bucket
+DEBRIDNEST_S3_REGION=<region>
+DEBRIDNEST_S3_ACCESS_KEY=<key-id>
+DEBRIDNEST_S3_SECRET_KEY=<application-key>
+```
+
+### Offload behavior
+
+When `s3OffloadLocal=1`, the local file under `/data/files` is removed after a successful upload. Signed download links (`/dl/*`) continue to work by reading from object storage. **WebDAV serves local files only** — offloaded content is not available via WebDAV until a future release adds remote passthrough.
 
 ## Torrent file upload
 

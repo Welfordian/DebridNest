@@ -50,7 +50,7 @@ func main() {
 	activitySvc := activity.New(db)
 
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore, settingsStore.S3Config())
 	if err != nil {
 		log.Fatalf("torrent: %v", err)
 	}

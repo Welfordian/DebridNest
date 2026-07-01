@@ -11,6 +11,7 @@ Onboarding reference for AI agents and human contributors working in this repo.
 | `internal/api/admin/` | Admin/dashboard API (`/api/v1/`) |
 | `internal/api/qbit/` | qBittorrent Web API subset (`/api/v2/`) |
 | `internal/torrent/` | Torrent download pipeline and manager |
+| `internal/objectstore/` | S3-compatible object storage (upload, range reads, offload) |
 | `web/dashboard/` | React dashboard source (Vite + TypeScript) |
 | `internal/web/dashboard/` | Built dashboard assets embedded via `internal/web/embed.go` |
 
@@ -58,5 +59,6 @@ Example: `docker compose --profile stremio up -d --build`
 
 - [README.md](README.md) — quick start and feature overview
 - [docs/operations.md](docs/operations.md) — retention, quotas, admin API, webhooks
+- [docs/object-storage.md](docs/object-storage.md) — S3/R2/B2 object storage setup
 - [docs/api-compat.md](docs/api-compat.md) — Real-Debrid API compatibility
 - [CHANGELOG.md](CHANGELOG.md) — release history by phase

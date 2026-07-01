@@ -7,6 +7,7 @@ import {
   patchSettings,
   purgeTorrents,
   runCleanup,
+  testS3Settings,
   type Config,
   type RetentionResult,
   type Settings,
@@ -62,6 +63,15 @@ function settingsToForm(settings: Settings) {
     webhookGotifyToken: settings.webhookGotifyToken ?? '',
     notifyOnDownloadComplete: settings.notifyOnDownloadComplete ?? false,
     notifyOnQuotaWarning: settings.notifyOnQuotaWarning ?? false,
+    s3Enabled: settings.s3Enabled ?? false,
+    s3Endpoint: settings.s3Endpoint ?? '',
+    s3Bucket: settings.s3Bucket ?? '',
+    s3Region: settings.s3Region ?? 'auto',
+    s3Prefix: settings.s3Prefix ?? '',
+    s3AccessKey: settings.s3AccessKey ?? '',
+    s3SecretKey: settings.s3SecretKey ?? '',
+    s3ForcePathStyle: settings.s3ForcePathStyle ?? false,
+    s3OffloadLocal: settings.s3OffloadLocal ?? false,
   };
 }
 
@@ -77,6 +87,7 @@ export default function Settings({ isAdmin }: SettingsProps) {
   const [purgeBusy, setPurgeBusy] = useState<'completed' | 'failed' | null>(null);
   const [purgeMessage, setPurgeMessage] = useState<string | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [s3TestBusy, setS3TestBusy] = useState(false);
 
   const [form, setForm] = useState(() => ({
     retentionDays: '0',
@@ -88,6 +99,15 @@ export default function Settings({ isAdmin }: SettingsProps) {
     webhookGotifyToken: '',
     notifyOnDownloadComplete: false,
     notifyOnQuotaWarning: false,
+    s3Enabled: false,
+    s3Endpoint: '',
+    s3Bucket: '',
+    s3Region: 'auto',
+    s3Prefix: '',
+    s3AccessKey: '',
+    s3SecretKey: '',
+    s3ForcePathStyle: false,
+    s3OffloadLocal: false,
   }));
 
   const configLoader = useCallback(async () => {
@@ -123,6 +143,22 @@ export default function Settings({ isAdmin }: SettingsProps) {
       notifyOnQuotaWarning: form.notifyOnQuotaWarning,
     };
 
+    if (isAdmin) {
+      patch.s3Enabled = form.s3Enabled;
+      patch.s3Endpoint = form.s3Endpoint.trim();
+      patch.s3Bucket = form.s3Bucket.trim();
+      patch.s3Region = form.s3Region.trim() || 'auto';
+      patch.s3Prefix = form.s3Prefix.trim();
+      patch.s3ForcePathStyle = form.s3ForcePathStyle;
+      patch.s3OffloadLocal = form.s3OffloadLocal;
+      if (form.s3AccessKey.trim() && form.s3AccessKey !== '(configured)') {
+        patch.s3AccessKey = form.s3AccessKey.trim();
+      }
+      if (form.s3SecretKey.trim() && form.s3SecretKey !== '(configured)') {
+        patch.s3SecretKey = form.s3SecretKey.trim();
+      }
+    }
+
     try {
       await patchSettings(patch);
       toast('Settings saved');
@@ -131,6 +167,18 @@ export default function Settings({ isAdmin }: SettingsProps) {
       toast(err instanceof Error ? err.message : 'Save failed', 'error');
     } finally {
       setSaveBusy(false);
+    }
+  }
+
+  async function handleS3Test() {
+    setS3TestBusy(true);
+    try {
+      await testS3Settings();
+      toast('S3 connection successful');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'S3 test failed', 'error');
+    } finally {
+      setS3TestBusy(false);
     }
   }
 
@@ -332,6 +380,124 @@ export default function Settings({ isAdmin }: SettingsProps) {
             </label>
           </div>
         </section>
+
+        {isAdmin && (
+          <section className="card config-card settings-form">
+            <div className="card-heading">
+              <h2>Object storage (S3)</h2>
+            </div>
+            <p className="muted section-desc">
+              Upload completed files to S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2).
+              Save settings before testing the connection.
+            </p>
+            <div className="toggle-grid">
+              <label className="toggle-label">
+                <input
+                  type="checkbox"
+                  checked={form.s3Enabled}
+                  onChange={(e) => setForm((f) => ({ ...f, s3Enabled: e.target.checked }))}
+                />
+                <span>Enable S3 upload</span>
+              </label>
+              <label className="toggle-label">
+                <input
+                  type="checkbox"
+                  checked={form.s3ForcePathStyle}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, s3ForcePathStyle: e.target.checked }))
+                  }
+                />
+                <span>Force path-style URLs</span>
+              </label>
+              <label className="toggle-label">
+                <input
+                  type="checkbox"
+                  checked={form.s3OffloadLocal}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, s3OffloadLocal: e.target.checked }))
+                  }
+                />
+                <span>Delete local file after upload</span>
+              </label>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="s3-endpoint">Endpoint</label>
+                <input
+                  id="s3-endpoint"
+                  className="input"
+                  type="url"
+                  value={form.s3Endpoint}
+                  placeholder="https://…r2.cloudflarestorage.com"
+                  onChange={(e) => setForm((f) => ({ ...f, s3Endpoint: e.target.value }))}
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="s3-bucket">Bucket</label>
+                <input
+                  id="s3-bucket"
+                  className="input"
+                  value={form.s3Bucket}
+                  placeholder="my-bucket"
+                  onChange={(e) => setForm((f) => ({ ...f, s3Bucket: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="s3-region">Region</label>
+                <input
+                  id="s3-region"
+                  className="input"
+                  value={form.s3Region}
+                  placeholder="auto"
+                  onChange={(e) => setForm((f) => ({ ...f, s3Region: e.target.value }))}
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="s3-prefix">Key prefix</label>
+                <input
+                  id="s3-prefix"
+                  className="input"
+                  value={form.s3Prefix}
+                  placeholder="debridnest/"
+                  onChange={(e) => setForm((f) => ({ ...f, s3Prefix: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="s3-access-key">Access key</label>
+                <input
+                  id="s3-access-key"
+                  className="input"
+                  value={form.s3AccessKey}
+                  autoComplete="off"
+                  onChange={(e) => setForm((f) => ({ ...f, s3AccessKey: e.target.value }))}
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="s3-secret-key">Secret key</label>
+                <input
+                  id="s3-secret-key"
+                  className="input"
+                  type="password"
+                  value={form.s3SecretKey}
+                  autoComplete="off"
+                  onChange={(e) => setForm((f) => ({ ...f, s3SecretKey: e.target.value }))}
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={s3TestBusy || !form.s3Enabled}
+              onClick={handleS3Test}
+            >
+              {s3TestBusy ? 'Testing…' : 'Test connection'}
+            </button>
+          </section>
+        )}
       </form>
 
       <section className="card config-card">

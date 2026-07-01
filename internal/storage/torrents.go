@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -27,13 +28,15 @@ type TorrentRecord struct {
 }
 
 type TorrentFileRecord struct {
-	ID               int
-	TorrentID        string
-	Path             string
-	Bytes            int64
-	Selected         bool
-	DownloadedBytes  int64
-	DiskPath         string
+	ID              int
+	TorrentID       string
+	Path            string
+	Bytes           int64
+	Selected        bool
+	DownloadedBytes int64
+	DiskPath        string
+	ObjectKey       string
+	RemoteStored    bool
 }
 
 type DownloadRecord struct {
@@ -69,10 +72,14 @@ func (db *DB) CreateTorrent(ctx context.Context, rec TorrentRecord) error {
 		if f.Selected {
 			selected = 1
 		}
+		remoteStored := 0
+		if f.RemoteStored {
+			remoteStored = 1
+		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			f.ID, rec.ID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.DiskPath,
+			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.ID, rec.ID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.DiskPath, f.ObjectKey, remoteStored,
 		)
 		if err != nil {
 			return err
@@ -111,10 +118,14 @@ func (db *DB) UpdateTorrentFiles(ctx context.Context, torrentID string, files []
 		if f.Selected {
 			selected = 1
 		}
+		remoteStored := 0
+		if f.RemoteStored {
+			remoteStored = 1
+		}
 		_, err = tx.ExecContext(ctx, `
-			UPDATE torrent_files SET selected = ?, downloaded_bytes = ?, disk_path = ?
+			UPDATE torrent_files SET selected = ?, downloaded_bytes = ?, disk_path = ?, object_key = ?, remote_stored = ?
 			WHERE torrent_id = ? AND id = ?`,
-			selected, f.DownloadedBytes, f.DiskPath, torrentID, f.ID,
+			selected, f.DownloadedBytes, f.DiskPath, f.ObjectKey, remoteStored, torrentID, f.ID,
 		)
 		if err != nil {
 			return err
@@ -291,34 +302,62 @@ func (db *DB) GetHostLink(ctx context.Context, linkID string) (torrentID string,
 
 func (db *DB) GetTorrentFileByDiskPath(ctx context.Context, diskPath string) (TorrentFileRecord, error) {
 	var f TorrentFileRecord
-	var selected int
+	var selected, remoteStored int
 	err := db.QueryRowContext(ctx, `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files WHERE disk_path = ?`, diskPath).Scan(
-		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath,
+		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
 	)
 	if err != nil {
 		return TorrentFileRecord{}, err
 	}
 	f.Selected = selected == 1
+	f.RemoteStored = remoteStored == 1
+	return f, nil
+}
+
+func (db *DB) GetTorrentFileByRelativePath(ctx context.Context, relativePath string) (TorrentFileRecord, error) {
+	relativePath = strings.TrimPrefix(filepath.ToSlash(relativePath), "/")
+	parts := strings.SplitN(relativePath, "/", 2)
+	if len(parts) < 2 {
+		return TorrentFileRecord{}, sql.ErrNoRows
+	}
+	infoHash := strings.ToLower(parts[0])
+	subPath := "/" + parts[1]
+
+	var f TorrentFileRecord
+	var selected, remoteStored int
+	err := db.QueryRowContext(ctx, `
+		SELECT tf.id, tf.torrent_id, tf.path, tf.bytes, tf.selected, tf.downloaded_bytes, tf.disk_path, tf.object_key, tf.remote_stored
+		FROM torrent_files tf
+		JOIN torrents t ON t.id = tf.torrent_id
+		WHERE t.info_hash = ? AND tf.path = ?`, infoHash, subPath).Scan(
+		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
+	)
+	if err != nil {
+		return TorrentFileRecord{}, err
+	}
+	f.Selected = selected == 1
+	f.RemoteStored = remoteStored == 1
 	return f, nil
 }
 
 func (db *DB) GetTorrentFileByBasename(ctx context.Context, basename string) (TorrentFileRecord, error) {
 	var f TorrentFileRecord
-	var selected int
+	var selected, remoteStored int
 	err := db.QueryRowContext(ctx, `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files
 		WHERE disk_path LIKE ? OR path LIKE ?
 		ORDER BY downloaded_bytes DESC
 		LIMIT 1`, "%/"+basename, "%/"+basename).Scan(
-		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath,
+		&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored,
 	)
 	if err != nil {
 		return TorrentFileRecord{}, err
 	}
 	f.Selected = selected == 1
+	f.RemoteStored = remoteStored == 1
 	return f, nil
 }
 
@@ -364,7 +403,7 @@ func (db *DB) ListDownloads(ctx context.Context, limit int) ([]DownloadRecord, e
 
 func (db *DB) listTorrentFiles(ctx context.Context, torrentID string) ([]TorrentFileRecord, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files WHERE torrent_id = ? ORDER BY id ASC`, torrentID)
 	if err != nil {
 		return nil, err
@@ -373,15 +412,26 @@ func (db *DB) listTorrentFiles(ctx context.Context, torrentID string) ([]Torrent
 
 	var files []TorrentFileRecord
 	for rows.Next() {
-		var f TorrentFileRecord
-		var selected int
-		if err := rows.Scan(&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath); err != nil {
+		f, err := scanTorrentFile(rows)
+		if err != nil {
 			return nil, err
 		}
-		f.Selected = selected == 1
 		files = append(files, f)
 	}
 	return files, rows.Err()
+}
+
+func scanTorrentFile(row interface {
+	Scan(dest ...any) error
+}) (TorrentFileRecord, error) {
+	var f TorrentFileRecord
+	var selected, remoteStored int
+	if err := row.Scan(&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath, &f.ObjectKey, &remoteStored); err != nil {
+		return TorrentFileRecord{}, err
+	}
+	f.Selected = selected == 1
+	f.RemoteStored = remoteStored == 1
+	return f, nil
 }
 
 func (db *DB) listHostLinks(ctx context.Context, torrentID string) ([]string, error) {
@@ -439,7 +489,7 @@ func (db *DB) listTorrentFilesBatch(ctx context.Context, torrentIDs []string) (m
 		args[i] = id
 	}
 	query := `
-		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored
 		FROM torrent_files WHERE torrent_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY torrent_id ASC, id ASC`
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -449,12 +499,10 @@ func (db *DB) listTorrentFilesBatch(ctx context.Context, torrentIDs []string) (m
 	defer rows.Close()
 
 	for rows.Next() {
-		var f TorrentFileRecord
-		var selected int
-		if err := rows.Scan(&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath); err != nil {
+		f, err := scanTorrentFile(rows)
+		if err != nil {
 			return nil, err
 		}
-		f.Selected = selected == 1
 		out[f.TorrentID] = append(out[f.TorrentID], f)
 	}
 	return out, rows.Err()

@@ -251,6 +251,15 @@ export interface Settings {
   webhookGotifyToken?: string;
   notifyOnDownloadComplete?: boolean;
   notifyOnQuotaWarning?: boolean;
+  s3Enabled?: boolean;
+  s3Endpoint?: string;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3Prefix?: string;
+  s3AccessKey?: string;
+  s3SecretKey?: string;
+  s3ForcePathStyle?: boolean;
+  s3OffloadLocal?: boolean;
 }
 
 export interface SettingsPatch {
@@ -263,6 +272,15 @@ export interface SettingsPatch {
   webhookGotifyToken?: string;
   notifyOnDownloadComplete?: boolean;
   notifyOnQuotaWarning?: boolean;
+  s3Enabled?: boolean;
+  s3Endpoint?: string;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3Prefix?: string;
+  s3AccessKey?: string;
+  s3SecretKey?: string;
+  s3ForcePathStyle?: boolean;
+  s3OffloadLocal?: boolean;
 }
 
 export interface DashboardUser {
@@ -312,6 +330,10 @@ export function patchSettings(patch: SettingsPatch): Promise<Settings> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
+}
+
+export function testS3Settings(): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/api/v1/settings/s3-test', { method: 'POST' });
 }
 
 export function fetchUsers(): Promise<DashboardUser[]> {

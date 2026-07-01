@@ -9,6 +9,7 @@ import (
 
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 	"github.com/debridnest/debridnest/internal/torrent"
@@ -35,7 +36,7 @@ func testRetention(t *testing.T, retentionDays int, diskQuotaGB int64) (*Runner,
 		t.Fatalf("settings: %v", err)
 	}
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
 	if err != nil {
 		_ = db.Close()
 		t.Fatalf("manager: %v", err)

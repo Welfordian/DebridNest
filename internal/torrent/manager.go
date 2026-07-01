@@ -18,20 +18,22 @@ import (
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/diskusage"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 )
 
 type Manager struct {
-	cfg      config.Config
-	db       *storage.DB
-	signer   *links.Signer
-	client   *torrent.Client
-	mu       sync.RWMutex
-	active   map[string]*runtimeTorrent
-	filesDir string
-	hooks    *Hooks
-	settings *settings.Store
+	cfg         config.Config
+	db          *storage.DB
+	signer      *links.Signer
+	client      *torrent.Client
+	mu          sync.RWMutex
+	active      map[string]*runtimeTorrent
+	filesDir    string
+	hooks       *Hooks
+	settings    *settings.Store
+	objectStore *objectstore.Store
 
 	diskMu     sync.RWMutex
 	diskUsed   int64
@@ -63,7 +65,7 @@ type runtimeTorrent struct {
 	done chan struct{}
 }
 
-func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, settingsStore *settings.Store) (*Manager, error) {
+func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, settingsStore *settings.Store, s3Cfg objectstore.Config) (*Manager, error) {
 	filesDir := filepath.Join(cfg.DataDir, "files")
 	torrentDir := filepath.Join(cfg.DataDir, "torrent")
 	if err := os.MkdirAll(filesDir, 0o755); err != nil {
@@ -90,14 +92,21 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, setting
 		return nil, fmt.Errorf("create torrent client: %w", err)
 	}
 
+	objectStore, err := objectstore.New(s3Cfg)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("object store: %w", err)
+	}
+
 	m := &Manager{
-		cfg:      cfg,
-		db:       db,
-		signer:   signer,
-		client:   client,
-		active:   make(map[string]*runtimeTorrent),
-		filesDir: filesDir,
-		settings: settingsStore,
+		cfg:         cfg,
+		db:          db,
+		signer:      signer,
+		client:      client,
+		active:      make(map[string]*runtimeTorrent),
+		filesDir:    filesDir,
+		settings:    settingsStore,
+		objectStore: objectStore,
 	}
 
 	if err := m.resumeIncomplete(context.Background()); err != nil {
@@ -105,6 +114,7 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, setting
 		return nil, err
 	}
 
+	m.reconcileOrphanFiles(context.Background())
 	m.reconcileDiskUsage(true)
 	go m.backgroundLoop()
 	return m, nil
@@ -206,25 +216,13 @@ func (m *Manager) SelectFiles(ctx context.Context, torrentID, filesSpec string) 
 }
 
 func (m *Manager) Delete(ctx context.Context, torrentID string) error {
-	var t *torrent.Torrent
-	m.mu.Lock()
-	if rt, ok := m.active[torrentID]; ok {
-		t = rt.t
-		delete(m.active, torrentID)
-	}
-	m.mu.Unlock()
-
-	if t != nil {
-		t.Drop()
-	}
-
 	rec, err := m.db.GetTorrent(ctx, torrentID)
 	if err != nil {
 		return err
 	}
 
-	dir := filepath.Join(m.filesDir, rec.InfoHash)
-	_ = os.RemoveAll(dir)
+	m.stopTorrent(torrentID, rec.InfoHash, rec.Magnet)
+	m.removeTorrentData(ctx, rec)
 	m.invalidateDiskUsed()
 	return m.db.DeleteTorrent(ctx, torrentID)
 }
@@ -414,6 +412,10 @@ func (m *Manager) processMagnet(id, magnet string) {
 
 	<-t.GotInfo()
 
+	if m.abortIfTorrentRemoved(ctx, id, t) {
+		return
+	}
+
 	rec, err := m.db.GetTorrent(ctx, id)
 	if err != nil {
 		return
@@ -544,6 +546,7 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 			if rec.Status == "downloaded" {
 				if prevStatus != "downloaded" {
 					m.fireDownloadComplete(rec.Name)
+					go m.offloadTorrent(context.Background(), rec.ID)
 				}
 				return
 			}
@@ -630,6 +633,7 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 		_ = m.db.UpdateTorrent(ctx, *rec)
 		if prevStatus != "downloaded" && rec.Status == "downloaded" {
 			m.fireDownloadComplete(rec.Name)
+			go m.offloadTorrent(context.Background(), rec.ID)
 		}
 	} else if rec.Status == "downloaded" || m.isStreamable(rec) {
 		m.refreshStreamLinks(ctx, rec)
@@ -723,6 +727,10 @@ func (m *Manager) resumeOne(rec storage.TorrentRecord) {
 	}
 	<-t.GotInfo()
 
+	if m.abortIfTorrentRemoved(ctx, rec.ID, t) {
+		return
+	}
+
 	rt := &runtimeTorrent{id: rec.ID, t: t, done: make(chan struct{})}
 	m.mu.Lock()
 	m.active[rec.ID] = rt
@@ -752,10 +760,14 @@ func (m *Manager) replaceTorrentFiles(ctx context.Context, torrentID string, fil
 		if f.Selected {
 			selected = 1
 		}
+		remoteStored := 0
+		if f.RemoteStored {
+			remoteStored = 1
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			f.ID, torrentID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.DiskPath,
+			INSERT INTO torrent_files (id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path, object_key, remote_stored)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.ID, torrentID, f.Path, f.Bytes, selected, f.DownloadedBytes, f.DiskPath, f.ObjectKey, remoteStored,
 		); err != nil {
 			return err
 		}
@@ -1174,4 +1186,56 @@ func extractLinkID(hostLink string) string {
 		return strings.TrimSpace(hostLink[i+1:])
 	}
 	return ""
+}
+
+func (m *Manager) offloadTorrent(ctx context.Context, torrentID string) {
+	if m.objectStore == nil || !m.objectStore.Enabled() {
+		return
+	}
+
+	rec, err := m.db.GetTorrent(ctx, torrentID)
+	if err != nil || rec.Status != "downloaded" {
+		return
+	}
+
+	var updated []storage.TorrentFileRecord
+	for i := range rec.Files {
+		f := rec.Files[i]
+		if !f.Selected || f.RemoteStored {
+			continue
+		}
+		if f.DiskPath == "" {
+			continue
+		}
+		if _, err := os.Stat(f.DiskPath); err != nil {
+			continue
+		}
+
+		key := m.objectStore.ObjectKey(rec.InfoHash, f.Path)
+		if err := m.objectStore.Upload(ctx, f.DiskPath, key); err != nil {
+			continue
+		}
+
+		f.ObjectKey = key
+		f.RemoteStored = true
+		if m.objectStore.OffloadLocal() {
+			_ = os.Remove(f.DiskPath)
+		}
+		updated = append(updated, f)
+	}
+
+	if len(updated) == 0 {
+		return
+	}
+
+	for _, f := range updated {
+		for i := range rec.Files {
+			if rec.Files[i].ID == f.ID {
+				rec.Files[i] = f
+				break
+			}
+		}
+	}
+	_ = m.db.UpdateTorrentFiles(ctx, torrentID, rec.Files)
+	m.invalidateDiskUsed()
 }

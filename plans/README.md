@@ -11,6 +11,7 @@ Generated from improve audit on 2026-06-30 at commit `fc8e5f5`. Executing via pa
 | 003 | Characterization + integration tests | go-backend | DONE |
 | 004 | Stremio security + CI | stremio-ci | DONE |
 | 005 | DX + docs bundle | dx-docs | DONE |
+| 006 | S3 object storage | go-backend + settings-ui + tests-docs | DONE |
 
 ## Verification gates (all agents)
 

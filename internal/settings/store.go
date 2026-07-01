@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/debridnest/debridnest/internal/config"
+	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/storage"
 )
 
@@ -20,6 +21,15 @@ const (
 	keyWebhookGotifyToken       = "webhookGotifyToken"
 	keyNotifyOnDownloadComplete = "notifyOnDownloadComplete"
 	keyNotifyOnQuotaWarning     = "notifyOnQuotaWarning"
+	keyS3Enabled                = "s3Enabled"
+	keyS3Endpoint               = "s3Endpoint"
+	keyS3Bucket                 = "s3Bucket"
+	keyS3Region                 = "s3Region"
+	keyS3Prefix                 = "s3Prefix"
+	keyS3AccessKey              = "s3AccessKey"
+	keyS3SecretKey              = "s3SecretKey"
+	keyS3ForcePathStyle         = "s3ForcePathStyle"
+	keyS3OffloadLocal           = "s3OffloadLocal"
 )
 
 var patchableKeys = map[string]bool{
@@ -32,6 +42,15 @@ var patchableKeys = map[string]bool{
 	keyWebhookGotifyToken:       true,
 	keyNotifyOnDownloadComplete: true,
 	keyNotifyOnQuotaWarning:     true,
+	keyS3Enabled:                true,
+	keyS3Endpoint:               true,
+	keyS3Bucket:                 true,
+	keyS3Region:                 true,
+	keyS3Prefix:                 true,
+	keyS3AccessKey:              true,
+	keyS3SecretKey:              true,
+	keyS3ForcePathStyle:         true,
+	keyS3OffloadLocal:           true,
 }
 
 type Merged struct {
@@ -44,6 +63,15 @@ type Merged struct {
 	WebhookGotifyToken       string  `json:"webhookGotifyToken"`
 	NotifyOnDownloadComplete bool    `json:"notifyOnDownloadComplete"`
 	NotifyOnQuotaWarning     bool    `json:"notifyOnQuotaWarning"`
+	S3Enabled                bool    `json:"s3Enabled"`
+	S3Endpoint               string  `json:"s3Endpoint"`
+	S3Bucket                 string  `json:"s3Bucket"`
+	S3Region                 string  `json:"s3Region"`
+	S3Prefix                 string  `json:"s3Prefix"`
+	S3AccessKey              string  `json:"s3AccessKey"`
+	S3SecretKey              string  `json:"s3SecretKey"`
+	S3ForcePathStyle         bool    `json:"s3ForcePathStyle"`
+	S3OffloadLocal           bool    `json:"s3OffloadLocal"`
 }
 
 type Store struct {
@@ -101,6 +129,15 @@ func (s *Store) GetMerged() Merged {
 		WebhookGotifyToken:       s.GetWebhookGotifyToken(),
 		NotifyOnDownloadComplete: s.GetNotifyOnDownloadComplete(),
 		NotifyOnQuotaWarning:     s.GetNotifyOnQuotaWarning(),
+		S3Enabled:                s.GetS3Enabled(),
+		S3Endpoint:               s.GetS3Endpoint(),
+		S3Bucket:                 s.GetS3Bucket(),
+		S3Region:                 s.GetS3Region(),
+		S3Prefix:                 s.GetS3Prefix(),
+		S3AccessKey:              s.GetS3AccessKey(),
+		S3SecretKey:              s.GetS3SecretKey(),
+		S3ForcePathStyle:         s.GetS3ForcePathStyle(),
+		S3OffloadLocal:           s.GetS3OffloadLocal(),
 	}
 }
 
@@ -111,7 +148,16 @@ func (s *Store) RedactForNonAdmin() Merged {
 	m.WebhookNtfyTopic = redactWebhookURL(m.WebhookNtfyTopic)
 	m.WebhookGotifyUrl = redactWebhookURL(m.WebhookGotifyUrl)
 	m.WebhookGotifyToken = ""
+	m.S3AccessKey = redactSecretValue(m.S3AccessKey)
+	m.S3SecretKey = ""
 	return m
+}
+
+func redactSecretValue(v string) string {
+	if v == "" {
+		return ""
+	}
+	return "(configured)"
 }
 
 func redactWebhookURL(u string) string {
@@ -219,6 +265,87 @@ func (s *Store) GetNotifyOnQuotaWarning() bool {
 		return v
 	}
 	return s.cfg.NotifyOnQuotaWarning
+}
+
+func (s *Store) GetS3Enabled() bool {
+	if v, ok := s.overrideBool(keyS3Enabled); ok {
+		return v
+	}
+	return s.s3Defaults().Enabled
+}
+
+func (s *Store) GetS3Endpoint() string {
+	if v, ok := s.overrideString(keyS3Endpoint); ok {
+		return v
+	}
+	return s.s3Defaults().Endpoint
+}
+
+func (s *Store) GetS3Bucket() string {
+	if v, ok := s.overrideString(keyS3Bucket); ok {
+		return v
+	}
+	return s.s3Defaults().Bucket
+}
+
+func (s *Store) GetS3Region() string {
+	if v, ok := s.overrideString(keyS3Region); ok {
+		return v
+	}
+	return s.s3Defaults().Region
+}
+
+func (s *Store) GetS3Prefix() string {
+	if v, ok := s.overrideString(keyS3Prefix); ok {
+		return v
+	}
+	return s.s3Defaults().Prefix
+}
+
+func (s *Store) GetS3AccessKey() string {
+	if v, ok := s.overrideString(keyS3AccessKey); ok {
+		return v
+	}
+	return s.s3Defaults().AccessKey
+}
+
+func (s *Store) GetS3SecretKey() string {
+	if v, ok := s.overrideString(keyS3SecretKey); ok {
+		return v
+	}
+	return s.s3Defaults().SecretKey
+}
+
+func (s *Store) GetS3ForcePathStyle() bool {
+	if v, ok := s.overrideBool(keyS3ForcePathStyle); ok {
+		return v
+	}
+	return s.s3Defaults().ForcePathStyle
+}
+
+func (s *Store) GetS3OffloadLocal() bool {
+	if v, ok := s.overrideBool(keyS3OffloadLocal); ok {
+		return v
+	}
+	return s.s3Defaults().OffloadLocal
+}
+
+func (s *Store) S3Config() objectstore.Config {
+	return objectstore.Config{
+		Enabled:        s.GetS3Enabled(),
+		Endpoint:       s.GetS3Endpoint(),
+		Bucket:         s.GetS3Bucket(),
+		Region:         s.GetS3Region(),
+		AccessKey:      s.GetS3AccessKey(),
+		SecretKey:      s.GetS3SecretKey(),
+		Prefix:         s.GetS3Prefix(),
+		ForcePathStyle: s.GetS3ForcePathStyle(),
+		OffloadLocal:   s.GetS3OffloadLocal(),
+	}
+}
+
+func (s *Store) s3Defaults() objectstore.Config {
+	return objectstore.LoadFromEnv()
 }
 
 func (s *Store) DiskQuotaBytes() int64 {

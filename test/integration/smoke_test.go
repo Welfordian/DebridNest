@@ -16,6 +16,7 @@ import (
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
 	"github.com/debridnest/debridnest/internal/metrics"
+	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/server"
 	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
@@ -42,7 +43,7 @@ func setupRouter(t *testing.T, cfg config.Config, withMetrics bool) http.Handler
 	}
 
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
 	if err != nil {
 		t.Fatalf("torrent manager: %v", err)
 	}
@@ -276,7 +277,7 @@ func TestMetricsDisabled(t *testing.T) {
 	}
 
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
 	if err != nil {
 		t.Fatalf("torrent manager: %v", err)
 	}

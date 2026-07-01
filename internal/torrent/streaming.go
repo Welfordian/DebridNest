@@ -50,7 +50,10 @@ func (m *Manager) LookupByRelativePath(ctx context.Context, relativePath string)
 	absPath := filepath.Join(m.filesDir, clean)
 	file, err := m.db.GetTorrentFileByDiskPath(ctx, absPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("file not found")
+		file, err = m.db.GetTorrentFileByRelativePath(ctx, clean)
+		if err != nil {
+			return nil, nil, fmt.Errorf("file not found")
+		}
 	}
 
 	rec, err := m.Get(ctx, file.TorrentID)
@@ -81,6 +84,33 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 	}
 	if file == nil || !file.Selected {
 		return nil, time.Time{}, 0, fmt.Errorf("file not found")
+	}
+
+	if file.RemoteStored && m.objectStore != nil && m.objectStore.Enabled() {
+		key := file.ObjectKey
+		if key == "" {
+			key = m.objectStore.ObjectKey(rec.InfoHash, file.Path)
+		}
+		r, err := m.objectStore.Open(ctx, key)
+		if err != nil {
+			return nil, time.Time{}, 0, err
+		}
+		start := opts.StartOffset
+		if start < 0 {
+			start = 0
+		}
+		if start > 0 {
+			if _, err := r.Seek(start, io.SeekStart); err != nil {
+				r.Close()
+				return nil, time.Time{}, 0, err
+			}
+		}
+		size, modTime, err := m.objectStore.Head(ctx, key)
+		if err != nil {
+			modTime = time.Now()
+			size = file.Bytes
+		}
+		return r, modTime, size, nil
 	}
 
 	if rec.Status == "downloaded" {

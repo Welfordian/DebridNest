@@ -7,6 +7,7 @@ import (
 
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 )
@@ -32,7 +33,7 @@ func testManager(t *testing.T) (*Manager, *storage.DB) {
 		t.Fatalf("settings: %v", err)
 	}
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := NewManager(cfg, db, signer, settingsStore)
+	manager, err := NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
 	if err != nil {
 		_ = db.Close()
 		t.Fatalf("manager: %v", err)

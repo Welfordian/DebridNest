@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/debridnest/debridnest/internal/auth"
+	"github.com/debridnest/debridnest/internal/objectstore"
 )
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -60,4 +61,32 @@ func (h *Handler) effectiveRateLimitMbps() float64 {
 		return h.settings.GetDownloadRateLimitMbps()
 	}
 	return h.cfg.DownloadRateLimitMB
+}
+
+func (h *Handler) testS3Settings(w http.ResponseWriter, r *http.Request) {
+	if h.settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings not configured")
+		return
+	}
+
+	cfg := h.settings.S3Config()
+	if !cfg.Enabled {
+		writeError(w, http.StatusServiceUnavailable, "S3 object storage is disabled")
+		return
+	}
+	if cfg.Bucket == "" {
+		writeError(w, http.StatusBadRequest, "S3 bucket is required")
+		return
+	}
+
+	store, err := objectstore.New(cfg)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := store.TestConnection(r.Context()); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

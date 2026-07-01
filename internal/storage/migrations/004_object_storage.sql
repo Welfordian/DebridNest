@@ -1,0 +1,2 @@
+ALTER TABLE torrent_files ADD COLUMN object_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE torrent_files ADD COLUMN remote_stored INTEGER NOT NULL DEFAULT 0;

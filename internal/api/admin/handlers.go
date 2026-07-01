@@ -64,6 +64,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Use(adminMiddleware)
 		r.Post("/torrents/purge", h.purgeTorrents)
 		r.Patch("/settings", h.patchSettings)
+		r.Post("/settings/s3-test", h.testS3Settings)
 		r.Get("/activity", h.listActivity)
 		r.Get("/logs", h.listLogs)
 		r.Route("/users", func(r chi.Router) {

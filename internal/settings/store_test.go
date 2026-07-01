@@ -82,3 +82,60 @@ func TestStorePatchUnknownField(t *testing.T) {
 		t.Fatal("expected error for unknown field")
 	}
 }
+
+func TestStoreS3PatchGetAndRedaction(t *testing.T) {
+	t.Setenv("DEBRIDNEST_S3_ENABLED", "")
+	t.Setenv("DEBRIDNEST_S3_BUCKET", "")
+
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	store, err := NewStore(db, config.Config{})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	merged, err := store.Patch(context.Background(), map[string]any{
+		"s3Enabled":        true,
+		"s3Endpoint":       "https://abc.r2.cloudflarestorage.com",
+		"s3Bucket":         "my-bucket",
+		"s3Region":         "auto",
+		"s3Prefix":         "debridnest",
+		"s3AccessKey":      "access-id",
+		"s3SecretKey":      "secret-value",
+		"s3ForcePathStyle": true,
+		"s3OffloadLocal":   true,
+	})
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	if !merged.S3Enabled || merged.S3Bucket != "my-bucket" {
+		t.Fatalf("merged S3 = %+v", merged)
+	}
+	if merged.S3AccessKey != "access-id" || merged.S3SecretKey != "secret-value" {
+		t.Fatal("expected admin GET to include secrets")
+	}
+	if !merged.S3ForcePathStyle || !merged.S3OffloadLocal {
+		t.Fatal("expected S3 flags patched")
+	}
+
+	cfg := store.S3Config()
+	if !cfg.Enabled || cfg.Bucket != "my-bucket" || cfg.Endpoint == "" {
+		t.Fatalf("S3Config = %+v", cfg)
+	}
+
+	redacted := store.RedactForNonAdmin()
+	if redacted.S3SecretKey != "" {
+		t.Fatal("expected secret key redacted for non-admin")
+	}
+	if redacted.S3AccessKey != "(configured)" {
+		t.Fatalf("access key redaction = %q", redacted.S3AccessKey)
+	}
+	if redacted.S3Endpoint != "https://abc.r2.cloudflarestorage.com" {
+		t.Fatalf("endpoint should remain visible, got %q", redacted.S3Endpoint)
+	}
+}
