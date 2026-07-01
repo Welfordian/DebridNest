@@ -17,14 +17,12 @@
     "stremio-addon-sdk": "^1.6.10"
   },
   "overrides": {
+    "external-editor": {
+      "tmp": "0.2.7"
+    },
     "stremio-addon-sdk": {
       "router": {
         "path-to-regexp": "0.1.13"
-      },
-      "inquirer": {
-        "external-editor": {
-          "tmp": "0.2.7"
-        }
       }
     }
   }
