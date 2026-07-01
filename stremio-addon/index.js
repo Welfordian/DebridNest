@@ -84,14 +84,38 @@ function resolveJackettApiKey(userValue) {
   return configValue(userValue, DEFAULT_JACKETT_API_KEY)
 }
 
+function normalizeUserConfig(userConfig) {
+  if (!userConfig || typeof userConfig !== 'object') {
+    return {}
+  }
+  return userConfig
+}
+
+function resolveApiUrl(userValue) {
+  const configured = configValue(userValue, DEFAULT_API_URL)
+  const normalized = String(configured || '').trim()
+  if (!normalized) {
+    return DEFAULT_API_URL
+  }
+  // Public IP / localhost URLs fail from inside the addon container (no hairpin NAT).
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\//i.test(normalized)) {
+    if (normalized !== DEFAULT_API_URL) {
+      console.warn(`[config] apiUrl ${normalized} is not reachable from the addon container; using ${DEFAULT_API_URL}`)
+    }
+    return DEFAULT_API_URL
+  }
+  return normalized
+}
+
 function getConfig(userConfig = {}) {
+  userConfig = normalizeUserConfig(userConfig)
   const qualityConfig = quality.resolveQualityConfig(userConfig, {
     preferSdr: DEFAULT_PREFER_SDR,
     maxResolution: DEFAULT_MAX_RESOLUTION,
     maxFileSizeGb: DEFAULT_MAX_FILE_SIZE_GB,
   })
   return {
-    apiUrl: configValue(userConfig.apiUrl, DEFAULT_API_URL),
+    apiUrl: resolveApiUrl(userConfig.apiUrl),
     apiToken: configValue(userConfig.apiToken, DEFAULT_API_TOKEN),
     jackettUrl: configValue(userConfig.jackettUrl, DEFAULT_JACKETT_URL),
     jackettApiKey: resolveJackettApiKey(userConfig.jackettApiKey),
@@ -184,7 +208,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.1.7',
+  version: '3.1.8',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [
@@ -205,7 +229,7 @@ const manifest = {
     {
       key: 'apiUrl',
       type: 'text',
-      title: 'DebridNest API URL',
+      title: 'DebridNest API URL (Docker VPN: http://gluetun:8080/rest/1.0)',
       default: DEFAULT_API_URL,
     },
     {
@@ -340,7 +364,12 @@ builder.defineStreamHandler(async (args) => {
   }
 
   const hashes = ranked.map((e) => e.torrent.infoHash).filter(Boolean)
-  const availability = await debridnest.checkInstantAvailability(config.apiUrl, config.apiToken, hashes)
+  let availability = {}
+  try {
+    availability = await debridnest.checkInstantAvailability(config.apiUrl, config.apiToken, hashes)
+  } catch (err) {
+    console.warn(`[streams] instantAvailability failed (${err.message}); listing without cache hints`)
+  }
   const ordered = rank.applyCachePriority(ranked, availability).slice(0, config.maxResults)
 
   const streams = []
