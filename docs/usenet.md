@@ -138,6 +138,15 @@ After saving credentials:
 
 1. SSH to VPS, edit `.env` with NZBGet and Newznab vars above.
 2. Confirm `deploy/nzbget/nzbget.conf` has the correct **Usenet provider** host (Eweka: `news.eweka.nl`). Add username/password via web UI (see above).
-3. `docker compose --profile vpn --profile stremio --profile usenet up -d --build`
-4. Open NZBGet UI (`http://VPS:6789`), add Eweka credentials, verify **Test Connection** passes.
-5. Reinstall/configure Stremio addon; Usenet streams should appear alongside torrents.
+3. Seed NZBGet config into the Docker volume (once per install, or after changing `deploy/nzbget/nzbget.conf`):
+
+```bash
+docker run --rm \
+  -v debridnest_nzbget-config:/config \
+  -v "$(pwd)/deploy/nzbget:/seed:ro" \
+  alpine sh -c 'cp /seed/nzbget.conf /config/nzbget.conf && chown 1000:1000 /config/nzbget.conf'
+```
+
+4. `docker compose --profile vpn --profile stremio --profile usenet up -d --build`
+5. Open NZBGet UI (`http://VPS:6789`), add Eweka credentials, verify **Test Connection** passes.
+6. Reinstall/configure Stremio addon; Usenet streams should appear alongside torrents.

@@ -176,7 +176,6 @@ services:
     volumes:
       - nzbget-config:/config
       - debridnest-data:/data
-      - ./deploy/nzbget/nzbget.conf:/config/nzbget.conf:ro
     restart: unless-stopped
 
   nzbget-vpn:
@@ -190,7 +189,6 @@ services:
     volumes:
       - nzbget-config:/config
       - debridnest-data:/data
-      - ./deploy/nzbget/nzbget.conf:/config/nzbget.conf:ro
     depends_on:
       gluetun:
         condition: service_healthy
