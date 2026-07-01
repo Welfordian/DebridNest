@@ -21,9 +21,6 @@ const DEFAULT_API_URL = process.env.DEBRIDNEST_API_URL || 'http://localhost:8080
 const DEFAULT_API_TOKEN = process.env.DEBRIDNEST_API_TOKEN || ''
 const DEFAULT_JACKETT_URL = process.env.JACKETT_URL || ''
 const DEFAULT_JACKETT_API_KEY = jackettConfig.resolveDefaultApiKey()
-const DEFAULT_NEWZNAB_URL = process.env.NEWZNAB_URL || 'https://nzbfinder.ws/api'
-const DEFAULT_NEWZNAB_API_KEY = process.env.NEWZNAB_API_KEY || ''
-const DEFAULT_USENET_ENABLED = process.env.USENET_ENABLED === '1'
 const DEFAULT_MAX_RESULTS = Number(process.env.MAX_RESULTS || 5)
 const DEFAULT_PREFER_SDR = process.env.PREFER_SDR === '1'
 const DEFAULT_MAX_RESOLUTION = process.env.MAX_RESOLUTION || '0'
@@ -124,9 +121,6 @@ function getConfig(userConfig = {}) {
     apiToken: configValue(userConfig.apiToken, DEFAULT_API_TOKEN),
     jackettUrl: configValue(userConfig.jackettUrl, DEFAULT_JACKETT_URL),
     jackettApiKey: resolveJackettApiKey(userConfig.jackettApiKey),
-    newznabUrl: configValue(userConfig.newznabUrl, DEFAULT_NEWZNAB_URL),
-    newznabApiKey: configValue(userConfig.newznabApiKey, DEFAULT_NEWZNAB_API_KEY),
-    usenetEnabled: userConfig.usenetEnabled === '1' || userConfig.usenetEnabled === true || DEFAULT_USENET_ENABLED,
     maxResults: Number(configValue(userConfig.maxResults, DEFAULT_MAX_RESULTS)) || 5,
     preferSdr: qualityConfig.preferSdr,
     maxResolution: String(qualityConfig.maxResolution || '0'),
@@ -226,9 +220,8 @@ function requireDebridNestConfig(config) {
 function requireConfig(config) {
   requireDebridNestConfig(config)
   const hasTorrentSearch = config.jackettUrl && config.jackettApiKey
-  const hasUsenetSearch = config.usenetEnabled && config.newznabUrl && config.newznabApiKey
-  if (!hasTorrentSearch && !hasUsenetSearch) {
-    throw new Error('Configure Jackett/Prowlarr and/or Newznab (USENET_ENABLED=1, NEWZNAB_API_KEY).')
+  if (!hasTorrentSearch) {
+    throw new Error('Configure Jackett/Prowlarr.')
   }
 }
 
@@ -457,7 +450,6 @@ builder.defineStreamHandler(async (args) => {
       const progressToken = progress.createJob({
         magnet: entry.torrent.magnet,
         torrentLink: entry.torrent.link,
-        nzbUrl: entry.torrent.nzbUrl,
         apiUrl: config.apiUrl,
         apiToken: config.apiToken,
         label: entry.torrent.title,

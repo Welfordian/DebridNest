@@ -56,14 +56,6 @@ async function addMagnet(baseUrl, token, magnet) {
   return apiRequest(baseUrl, token, 'POST', '/torrents/addMagnet', { magnet })
 }
 
-async function addNzb(baseUrl, token, nzbUrl, name) {
-  const body = { url: nzbUrl }
-  if (name) {
-    body.name = name
-  }
-  return apiRequest(baseUrl, token, 'POST', '/torrents/addNzb', body)
-}
-
 async function addTorrentFile(baseUrl, token, data, filename = 'file.torrent') {
   const url = `${normalizeBaseUrl(baseUrl)}/torrents/addTorrent`
   const form = new FormData()
@@ -310,10 +302,6 @@ async function resolveStreamableQuick(baseUrl, token, magnet, options = {}) {
 
 async function startDownload(baseUrl, token, magnet, options = {}) {
   await getUser(baseUrl, token)
-  if (options.nzbUrl) {
-    const added = await addNzb(baseUrl, token, options.nzbUrl, options.label)
-    return added.id
-  }
   const added = await addTorrentCandidate(baseUrl, token, {
     magnet,
     torrentLink: options.torrentLink,
@@ -367,12 +355,6 @@ async function waitForDownload(baseUrl, token, torrentId, options = {}) {
 }
 
 async function resolveTorrentCandidate(baseUrl, token, torrent, options = {}) {
-  if (torrent.source === 'usenet' && torrent.nzbUrl) {
-    await getUser(baseUrl, token)
-    const added = await addNzb(baseUrl, token, torrent.nzbUrl, torrent.title)
-    return waitForDownload(baseUrl, token, added.id, options)
-  }
-
   const candidateOpts = {
     ...options,
     torrentLink: options.torrentLink || torrent.link,
@@ -397,7 +379,6 @@ async function resolveTorrentCandidate(baseUrl, token, torrent, options = {}) {
 module.exports = {
   getUser,
   addMagnet,
-  addNzb,
   getTorrentInfo,
   selectFiles,
   unrestrictLink,

@@ -68,9 +68,6 @@ type Config struct {
 	WebhookGotifyToken       string
 	NotifyOnDownloadComplete bool
 	NotifyOnQuotaWarning     bool
-	NZBGetURL                string
-	NZBGetUser               string
-	NZBGetPass               string
 }
 
 func (c Config) MinStreamBytes() int64 {
@@ -212,9 +209,6 @@ func Load() (Config, error) {
 		WebhookGotifyToken:       os.Getenv("DEBRIDNEST_WEBHOOK_GOTIFY_TOKEN"),
 		NotifyOnDownloadComplete: notifyOnDownloadComplete,
 		NotifyOnQuotaWarning:     notifyOnQuotaWarning,
-		NZBGetURL:                strings.TrimSpace(os.Getenv("DEBRIDNEST_NZBGET_URL")),
-		NZBGetUser:               getenv("DEBRIDNEST_NZBGET_USER", "nzbget"),
-		NZBGetPass:               os.Getenv("DEBRIDNEST_NZBGET_PASS"),
 	}, nil
 }
 

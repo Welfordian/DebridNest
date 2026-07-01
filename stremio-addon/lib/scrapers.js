@@ -1,5 +1,4 @@
 const jackett = require('./jackett')
-const newznab = require('./newznab')
 const dedupe = require('./dedupe')
 const seasonPacks = require('./seasonPacks')
 const rank = require('./rank')
@@ -47,9 +46,6 @@ async function searchAll(config, meta) {
     if (config.jackettUrl && config.jackettApiKey) {
       searches.push(jackett.searchTorrents(config.jackettUrl, config.jackettApiKey, meta))
     }
-    if (config.usenetEnabled && config.newznabUrl && config.newznabApiKey) {
-      searches.push(newznab.searchNewznab(config.newznabUrl, config.newznabApiKey, meta))
-    }
 
     const parts = await Promise.all(searches.map((p) => p.catch((err) => {
       console.error('[scrapers] search failed:', err?.message || err)
@@ -57,7 +53,7 @@ async function searchAll(config, meta) {
     })))
     let torrents = parts.flat()
     if (torrents.length === 0) {
-      console.warn('[scrapers] search returned 0 results — check Jackett indexers and/or Newznab config')
+      console.warn('[scrapers] search returned 0 results — check Jackett/Prowlarr indexers')
     }
 
     if (meta.type === 'series' && meta.season != null) {

@@ -47,7 +47,6 @@ func (h *Handler) Routes() chi.Router {
 		r.Get("/", h.listTorrents)
 		r.Post("/addMagnet", h.addMagnet)
 		r.Post("/addTorrent", h.addTorrent)
-		r.Post("/addNzb", h.addNzb)
 		r.Get("/info/{id}", h.getTorrentInfo)
 		r.Get("/instantAvailability/*", h.instantAvailability)
 		r.Post("/selectFiles/{id}", h.selectFiles)
@@ -90,41 +89,6 @@ func (h *Handler) addMagnet(w http.ResponseWriter, r *http.Request) {
 	rec, err := h.manager.AddMagnet(r.Context(), magnet)
 	if err != nil {
 		if errors.Is(err, torrentmgr.ErrInvalidMagnet) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]string{
-		"id":  rec.ID,
-		"uri": h.cfg.PublicURL + "/rest/1.0/torrents/info/" + rec.ID,
-	})
-}
-
-func (h *Handler) addNzb(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid form")
-		return
-	}
-	nzbURL := strings.TrimSpace(r.FormValue("url"))
-	if nzbURL == "" {
-		nzbURL = strings.TrimSpace(r.FormValue("nzb"))
-	}
-	if nzbURL == "" {
-		writeError(w, http.StatusBadRequest, "missing nzb url")
-		return
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-
-	rec, err := h.manager.AddNZB(r.Context(), nzbURL, name)
-	if err != nil {
-		if errors.Is(err, torrentmgr.ErrNZBDisabled) {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		if errors.Is(err, torrentmgr.ErrInvalidNZB) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
