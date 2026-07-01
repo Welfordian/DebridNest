@@ -687,6 +687,7 @@ type Stats struct {
 	TorrentCount  int
 	ActiveCount   int
 	DownloadSpeed int64
+	StatusCounts  map[string]int
 }
 
 func (m *Manager) FilesDir() string {
@@ -713,12 +714,18 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 		totalSpeed += rec.Speed
 	}
 
+	statusCounts, err := m.db.CountTorrentsByStatus(ctx)
+	if err != nil {
+		return Stats{}, err
+	}
+
 	return Stats{
 		DiskUsed:      used,
 		DiskQuota:     m.cfg.DiskQuotaBytes(),
 		TorrentCount:  total,
 		ActiveCount:   active,
 		DownloadSpeed: totalSpeed,
+		StatusCounts:  statusCounts,
 	}, nil
 }
 

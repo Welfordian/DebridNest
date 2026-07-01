@@ -99,6 +99,9 @@ services:
       JACKETT_CONFIG_FILE: /jackett-config/Jackett/ServerConfig.json
       PORT: "7001"
       MAX_RESULTS: "20"
+      PREFER_SDR: ${PREFER_SDR:-0}
+      MAX_RESOLUTION: ${MAX_RESOLUTION:-0}
+      MAX_FILE_SIZE_GB: ${MAX_FILE_SIZE_GB:-0}
       PROGRESS_MAX_WAIT_MS: "120000"
     volumes:
       - jackett-config:/jackett-config:ro
@@ -109,6 +112,59 @@ services:
         condition: service_started
       jackett-setup:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  gluetun:
+    profiles: ["vpn"]
+    image: qmcgaw/gluetun:latest
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-custom}
+      VPN_TYPE: ${VPN_TYPE:-openvpn}
+      OPENVPN_CUSTOM_CONFIG: ${OPENVPN_CUSTOM_CONFIG:-/gluetun/custom.conf}
+      OPENVPN_USER: ${OPENVPN_USER:-}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
+      WIREGUARD_PUBLIC_KEY: ${WIREGUARD_PUBLIC_KEY:-}
+      WIREGUARD_ENDPOINT_IP: ${WIREGUARD_ENDPOINT_IP:-}
+      FIREWALL_OUTBOUND_SUBNETS: ${FIREWALL_OUTBOUND_SUBNETS:-}
+      HEALTH_VPN_DURATION_INITIAL: 30s
+    ports:
+      - "8080:8080"
+      - "42069:42069"
+      - "42069:42069/udp"
+    volumes:
+      - ${OPENVPN_CONFIG_DIR:-./deploy/vpn}:/gluetun:ro
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  debridnest-vpn:
+    profiles: ["vpn"]
+    build: .
+    network_mode: "service:gluetun"
+    env_file:
+      - .env
+    environment:
+      DEBRIDNEST_DATA_DIR: /data
+      DEBRIDNEST_LISTEN: ":8080"
+      DEBRIDNEST_MIN_STREAM_MB: "8"
+      DEBRIDNEST_STREAM_READAHEAD_MB: "32"
+      DEBRIDNEST_SEEK_READAHEAD_MB: "64"
+      DEBRIDNEST_SEEK_PREROLL_MB: "8"
+    volumes:
+      - debridnest-data:/data
+    depends_on:
+      gluetun:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

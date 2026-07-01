@@ -10,6 +10,8 @@ const debridnest = require('./lib/debridnest')
 const progress = require('./lib/progress')
 const progressHandler = require('./lib/progressHandler')
 const jackettConfig = require('./lib/jackettConfig')
+const quality = require('./lib/quality')
+const externalPlayer = require('./lib/externalPlayer')
 
 const PORT = Number(process.env.PORT || 7000)
 const ADDON_BASE_URL = process.env.ADDON_BASE_URL || `http://127.0.0.1:${PORT}`
@@ -19,6 +21,9 @@ const DEFAULT_API_TOKEN = process.env.DEBRIDNEST_API_TOKEN || ''
 const DEFAULT_JACKETT_URL = process.env.JACKETT_URL || ''
 const DEFAULT_JACKETT_API_KEY = jackettConfig.resolveDefaultApiKey()
 const DEFAULT_MAX_RESULTS = Number(process.env.MAX_RESULTS || 5)
+const DEFAULT_PREFER_SDR = process.env.PREFER_SDR === '1'
+const DEFAULT_MAX_RESOLUTION = process.env.MAX_RESOLUTION || '0'
+const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
 const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
@@ -41,13 +46,61 @@ function resolveJackettApiKey(userValue) {
 }
 
 function getConfig(userConfig = {}) {
+  const qualityConfig = quality.resolveQualityConfig(userConfig, {
+    preferSdr: DEFAULT_PREFER_SDR,
+    maxResolution: DEFAULT_MAX_RESOLUTION,
+    maxFileSizeGb: DEFAULT_MAX_FILE_SIZE_GB,
+  })
   return {
     apiUrl: configValue(userConfig.apiUrl, DEFAULT_API_URL),
     apiToken: configValue(userConfig.apiToken, DEFAULT_API_TOKEN),
     jackettUrl: configValue(userConfig.jackettUrl, DEFAULT_JACKETT_URL),
     jackettApiKey: resolveJackettApiKey(userConfig.jackettApiKey),
     maxResults: Number(configValue(userConfig.maxResults, DEFAULT_MAX_RESULTS)) || 5,
+    preferSdr: qualityConfig.preferSdr,
+    maxResolution: String(qualityConfig.maxResolution || '0'),
+    maxFileSizeGb: String(qualityConfig.maxFileSizeGb || '0'),
   }
+}
+
+function getQualityConfig(config) {
+  return quality.resolveQualityConfig(config)
+}
+
+function maxResolutionDefaultOption() {
+  const parsed = quality.parseMaxResolution(DEFAULT_MAX_RESOLUTION)
+  if (!parsed) {
+    return 'Any'
+  }
+  return String(parsed)
+}
+
+function buildStreamObject(entry, streamUrl, options = {}) {
+  const { cached = false, placeholder = false } = options
+  const label = placeholder
+    ? rank.formatPlaceholderLabel(entry)
+    : rank.formatStreamLabel(entry, cached)
+  const title = entry?.torrent?.title || label
+
+  const stream = {
+    name: label,
+    title,
+    url: streamUrl,
+  }
+
+  if (placeholder) {
+    stream.behaviorHints = { notWebReady: true }
+    return stream
+  }
+
+  const streamId = externalPlayer.registerStream(streamUrl, title)
+  const openUrl = `${ADDON_BASE_URL}/open/${streamId}`
+  stream.title = `${title}\nIINA: ${openUrl}`
+  stream.behaviorHints = {
+    playerUrl: externalPlayer.buildIinaUrl(streamUrl),
+    openInExternal: openUrl,
+  }
+  return stream
 }
 
 function encodeMagnetId(magnet) {
@@ -132,6 +185,25 @@ const manifest = {
       title: 'Max streams to resolve',
       default: String(DEFAULT_MAX_RESULTS),
     },
+    {
+      key: 'preferSdr',
+      type: 'checkbox',
+      title: 'Prefer SDR over HDR/Dolby Vision (Mac Stremio)',
+      default: DEFAULT_PREFER_SDR ? 'true' : 'false',
+    },
+    {
+      key: 'maxResolution',
+      type: 'select',
+      title: 'Max resolution',
+      default: maxResolutionDefaultOption(),
+      options: ['Any', '720', '1080', '2160'],
+    },
+    {
+      key: 'maxFileSizeGb',
+      type: 'text',
+      title: 'Max file size (GB, 0 = no limit)',
+      default: String(DEFAULT_MAX_FILE_SIZE_GB),
+    },
   ],
 }
 
@@ -180,11 +252,10 @@ builder.defineStreamHandler(async (args) => {
     }
     const resolved = await debridnest.resolveMagnet(config.apiUrl, config.apiToken, magnet)
     return {
-      streams: [{
-        name: resolved.filename || 'DebridNest',
-        title: resolved.filename || 'DebridNest stream',
-        url: resolved.download,
-      }],
+      streams: [buildStreamObject(
+        { torrent: { title: resolved.filename || 'DebridNest' }, quality: { label: '' }, source: '' },
+        resolved.download,
+      )],
     }
   }
 
@@ -197,8 +268,9 @@ builder.defineStreamHandler(async (args) => {
     return { streams: [] }
   }
 
+  const qualityConfig = getQualityConfig(config)
   const torrents = await scrapers.searchAll(config, meta)
-  const ranked = rank.rankTorrents(torrents, meta, config.maxResults * 2)
+  const ranked = rank.rankTorrents(torrents, meta, config.maxResults * 2, qualityConfig)
   if (!ranked.length) {
     return { streams: [] }
   }
@@ -221,11 +293,7 @@ builder.defineStreamHandler(async (args) => {
           entry.torrent.magnet,
         )
         if (resolved) {
-          streams.push({
-            name: rank.formatStreamLabel(entry, true),
-            title: entry.torrent.title,
-            url: resolved.download,
-          })
+          streams.push(buildStreamObject(entry, resolved.download, { cached: true }))
           continue
         }
       } catch {
@@ -249,12 +317,11 @@ builder.defineStreamHandler(async (args) => {
         apiToken: config.apiToken,
         label: entry.torrent.title,
       })
-      streams.push({
-        name: rank.formatPlaceholderLabel(entry),
-        title: entry.torrent.title,
-        url: `${ADDON_BASE_URL}/progress/${token}`,
-        behaviorHints: { notWebReady: true },
-      })
+      streams.push(buildStreamObject(
+        entry,
+        `${ADDON_BASE_URL}/progress/${token}`,
+        { placeholder: true },
+      ))
       placeholders++
     } catch {
       // skip failed starts
@@ -291,6 +358,30 @@ app.get('/resolve', async (req, res) => {
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
   }
+})
+
+app.get('/open/:streamId', (req, res) => {
+  const entry = externalPlayer.getStream(req.params.streamId)
+  if (!entry) {
+    res.status(404).send('Stream link expired or not found')
+    return
+  }
+
+  const iinaUrl = externalPlayer.buildIinaUrl(entry.url)
+  const pageUrl = `${ADDON_BASE_URL}/open/${req.params.streamId}`
+
+  if (req.query.format === 'iina') {
+    res.redirect(302, iinaUrl)
+    return
+  }
+
+  res.setHeader('content-type', 'text/html')
+  res.end(externalPlayer.buildOpenPageHtml({
+    streamUrl: entry.url,
+    label: entry.label,
+    iinaUrl,
+    copyPageUrl: pageUrl,
+  }))
 })
 
 app.get('/progress/:token', async (req, res) => {

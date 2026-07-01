@@ -44,9 +44,13 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
 		"torrentCount":   s.TorrentCount,
 		"activeCount":    s.ActiveCount,
 		"downloadSpeed":  s.DownloadSpeed,
+		"statusCounts":   s.StatusCounts,
 		"retentionDays":  h.cfg.RetentionDays,
 		"publicUrl":      h.cfg.PublicURL,
 		"rateLimitMbps":  h.cfg.DownloadRateLimitMB,
+		"diskQuotaGb":    h.cfg.DiskQuotaGB,
+		"webdavEnabled":  h.cfg.WebDAVEnabled,
+		"metricsEnabled": h.cfg.MetricsEnabled,
 	})
 }
 
@@ -65,6 +69,10 @@ func (h *Handler) listTorrents(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(items))
 	for i := range items {
 		rec := &items[i]
+		size := rec.OriginalBytes
+		if size <= 0 {
+			size = rec.Bytes
+		}
 		entry := map[string]any{
 			"id":       rec.ID,
 			"name":     rec.Name,
@@ -72,6 +80,7 @@ func (h *Handler) listTorrents(w http.ResponseWriter, r *http.Request) {
 			"status":   rec.Status,
 			"progress": rec.Progress,
 			"bytes":    rec.Bytes,
+			"size":     size,
 			"speed":    rec.Speed,
 			"seeders":  rec.Seeders,
 			"added":    rec.AddedAt,
@@ -104,10 +113,12 @@ func (h *Handler) retryTorrent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) publicConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"publicUrl":     h.cfg.PublicURL,
-		"retentionDays": h.cfg.RetentionDays,
-		"diskQuotaGb":   h.cfg.DiskQuotaGB,
-		"rateLimitMbps": h.cfg.DownloadRateLimitMB,
+		"publicUrl":      h.cfg.PublicURL,
+		"retentionDays":  h.cfg.RetentionDays,
+		"diskQuotaGb":    h.cfg.DiskQuotaGB,
+		"rateLimitMbps":  h.cfg.DownloadRateLimitMB,
+		"webdavEnabled":  h.cfg.WebDAVEnabled,
+		"metricsEnabled": h.cfg.MetricsEnabled,
 	})
 }
 

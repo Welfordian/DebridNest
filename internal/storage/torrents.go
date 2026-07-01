@@ -460,6 +460,25 @@ func (db *DB) CountActiveTorrents(ctx context.Context) (int, error) {
 	return n, err
 }
 
+func (db *DB) CountTorrentsByStatus(ctx context.Context) (map[string]int, error) {
+	rows, err := db.QueryContext(ctx, `SELECT status, COUNT(*) FROM torrents GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) ResetTorrentForRetry(ctx context.Context, id string) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE torrents SET status = 'queued', progress = 0, ended_at = NULL, speed = 0

@@ -1,13 +1,6 @@
-const VIDEO_EXT = /\.(mp4|mkv|avi|webm|mov|m4v|wmv|flv|ts|m2ts)$/i
+const quality = require('./quality')
 
-function parseQuality(title) {
-  const t = title.toLowerCase()
-  if (/2160p|4k/u.test(t)) return { resolution: 2160, label: '4K' }
-  if (/1080p/u.test(t)) return { resolution: 1080, label: '1080p' }
-  if (/720p/u.test(t)) return { resolution: 720, label: '720p' }
-  if (/480p/u.test(t)) return { resolution: 480, label: '480p' }
-  return { resolution: 0, label: 'SD' }
-}
+const VIDEO_EXT = /\.(mp4|mkv|avi|webm|mov|m4v|wmv|flv|ts|m2ts)$/i
 
 function parseSource(title) {
   const t = title.toLowerCase()
@@ -46,7 +39,7 @@ function looksLikeVideoRelease(title) {
   return /2160p|4k|1080p|720p|480p|bluray|web-?dl|webrip|hdtv|remux|x264|x265|hevc|dvdrip/u.test(t)
 }
 
-function scoreTorrent(torrent, meta) {
+function scoreTorrent(torrent, meta, qualityConfig = {}) {
   if (!looksLikeVideoRelease(torrent.title)) {
     return -1
   }
@@ -54,12 +47,13 @@ function scoreTorrent(torrent, meta) {
     return -1
   }
 
-  const quality = parseQuality(torrent.title)
+  const parsedQuality = quality.parseQuality(torrent.title)
   const source = parseSource(torrent.title)
   let score = 0
 
   score += Math.min(torrent.seeders || 0, 500)
-  score += quality.resolution * 2
+  score += parsedQuality.resolution * 2
+  score += quality.hdrScoreAdjustment(torrent.title, qualityConfig.preferSdr)
 
   switch (source) {
     case 'Remux': score += 120; break
@@ -81,12 +75,13 @@ function scoreTorrent(torrent, meta) {
   return score
 }
 
-function rankTorrents(torrents, meta, maxResults = 5) {
+function rankTorrents(torrents, meta, maxResults = 5, qualityConfig = {}) {
   return torrents
+    .filter((torrent) => quality.passesQualityFilters(torrent, qualityConfig))
     .map((torrent) => ({
       torrent,
-      score: scoreTorrent(torrent, meta),
-      quality: parseQuality(torrent.title),
+      score: scoreTorrent(torrent, meta, qualityConfig),
+      quality: quality.parseQuality(torrent.title),
       source: parseSource(torrent.title),
     }))
     .filter((entry) => entry.score >= 0)
@@ -95,10 +90,11 @@ function rankTorrents(torrents, meta, maxResults = 5) {
 }
 
 function formatStreamLabel(entry, cached = false) {
-  const { torrent, quality, source } = entry
+  const { torrent, quality: parsedQuality, source } = entry
   const seeders = torrent.seeders ? ` (${torrent.seeders} seeders)` : ''
+  const hdr = quality.formatHdrLabel(torrent.title)
   const prefix = cached ? 'DebridNest ⚡' : 'DebridNest'
-  return `${prefix} ${quality.label} ${source}${cached ? ' (cached)' : ''}${seeders}`
+  return `${prefix} ${parsedQuality.label}${hdr} ${source}${cached ? ' (cached)' : ''}${seeders}`
 }
 
 function formatPlaceholderLabel(entry) {

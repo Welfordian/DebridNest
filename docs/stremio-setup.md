@@ -55,6 +55,48 @@ JACKETT_URL=http://host.docker.internal:9696/1/api
 JACKETT_API_KEY=your-prowlarr-key
 ```
 
+## 2b. Prowlarr as Jackett-compatible indexer (optional)
+
+Prowlarr exposes the same **Torznab** API Jackett uses, so the addon treats it as a drop-in replacement. No addon code changes are required — only the URL and API key differ.
+
+### Docker Compose with external Prowlarr on the host
+
+If Prowlarr runs on your Mac or NAS (default port **9696**):
+
+```
+JACKETT_URL=http://host.docker.internal:9696/1/api
+JACKETT_API_KEY=your-prowlarr-api-key
+```
+
+Replace `1` with your Prowlarr **indexer ID** (Settings → Indexers → click an indexer → note the ID in the URL), or use the **All** indexers endpoint if your Prowlarr version supports it:
+
+```
+JACKETT_URL=http://host.docker.internal:9696/8/api
+```
+
+### Prowlarr-only (no Jackett container)
+
+Skip the bundled Jackett service and point the addon at Prowlarr directly. On the configure page:
+
+| Field | Value |
+|-------|--------|
+| Jackett/Prowlarr URL | `http://host.docker.internal:9696/1/api` (host) or your LAN IP |
+| Jackett/Prowlarr API Key | Prowlarr → Settings → General → API Key |
+
+**Networking:** from inside Docker, use `host.docker.internal` (Mac/Windows) or the host LAN IP — not `localhost:9696`, which refers to the addon container itself.
+
+### Verify Prowlarr Torznab
+
+```bash
+curl -s "http://localhost:9696/1/api?t=caps&apikey=YOUR_KEY" | head -c 400
+```
+
+You should see Torznab capability XML. The addon diagnostics endpoint accepts the same URL:
+
+```bash
+curl -s 'http://127.0.0.1:7001/diagnostics?jackettUrl=http%3A%2F%2Fhost.docker.internal%3A9696%2F1%2Fapi&jackettApiKey=YOUR_KEY' | python3 -m json.tool
+```
+
 ## 3. Install the Stremio addon
 
 Configure page: `http://127.0.0.1:7001/configure`
@@ -81,6 +123,29 @@ Configure page: `http://127.0.0.1:7001/configure`
 | Jackett URL | `http://jackett:9117` |
 | Jackett API Key | from Jackett web UI |
 | Max streams | `5` |
+| Prefer SDR | enabled for Mac Stremio (optional) |
+| Max resolution | `1080` or `Any` |
+| Max file size (GB) | `15` or `0` for no limit |
+
+### Quality filters (env vars or configure page)
+
+Filter and rank torrents before resolving. Set server defaults in `.env` or override per install on the configure page.
+
+| Variable | Configure field | Default | Description |
+|----------|-----------------|---------|-------------|
+| `PREFER_SDR` | Prefer SDR over HDR/DV | off | Rank SDR releases above HDR/Dolby Vision (helps Mac Stremio) |
+| `MAX_RESOLUTION` | Max resolution | `0` (Any) | Cap resolution: `720`, `1080`, `2160`, or `0`/`Any` |
+| `MAX_FILE_SIZE_GB` | Max file size (GB) | `0` | Drop torrents larger than this size (Torznab `size` in bytes) |
+
+Example `.env` for 1080p SDR-friendly Mac playback:
+
+```
+PREFER_SDR=1
+MAX_RESOLUTION=1080
+MAX_FILE_SIZE_GB=15
+```
+
+Docker Compose passes these through the `stremio-addon` service `environment` block when set in `.env`.
 
 ## 4. Watch content
 
@@ -89,7 +154,9 @@ Configure page: `http://127.0.0.1:7001/configure`
 3. Go to the **Streams** tab
 4. Select a stream labeled `DebridNest 1080p BluRay (...)` etc.
 
-First play may take minutes while DebridNest downloads the torrent. Cached torrents show with a ⚡ label and start immediately. Uncached streams show ⏳ (downloading…) — select them and Stremio will poll until ready.
+Cached streams show a ⚡ label; uncached show ⏳ while DebridNest downloads. Stream descriptions include an **IINA:** link for macOS external playback — open it in a browser to launch [IINA](https://iina.io/) or copy the `iina://weblink?url=...` URL.
+
+First play may take minutes while DebridNest downloads the torrent.
 
 Set `ADDON_BASE_URL` to a URL reachable by Stremio when using downloading placeholders remotely (e.g. `https://addon.example.com`).
 
@@ -102,6 +169,9 @@ export DEBRIDNEST_API_URL=http://localhost:8080/rest/1.0
 export DEBRIDNEST_API_TOKEN=YOUR_TOKEN
 export JACKETT_URL=http://localhost:9117
 export JACKETT_API_KEY=YOUR_JACKETT_KEY
+export PREFER_SDR=1
+export MAX_RESOLUTION=1080
+export MAX_FILE_SIZE_GB=15
 PORT=7001 npm start
 ```
 
@@ -124,6 +194,9 @@ curl "http://127.0.0.1:7001/health?apiUrl=http://localhost:8080/rest/1.0&apiToke
 
 # Direct stream test (replace ENCODED_CONFIG from configure page)
 curl -s "http://127.0.0.1:7001/ENCODED_CONFIG/stream/movie/tt0111161.json" | head -c 500
+
+# IINA open helper (use streamId from stream response openInExternal URL)
+open "http://127.0.0.1:7001/open/STREAM_ID?format=iina"
 ```
 
 ## Magnet test catalog (optional)

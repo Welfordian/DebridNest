@@ -11,7 +11,18 @@ Self-hosted, open-source personal debrid server with a **Real-Debrid-compatible 
 - Progressive streaming before torrents finish downloading
 - Web dashboard at `/dashboard/` for torrent and disk management
 - Disk retention, quotas, and optional download rate limiting
-- Docker Compose with optional Caddy TLS, Cloudflare Tunnel, and Stremio addon profiles
+- Docker Compose with optional Caddy TLS, Cloudflare Tunnel, VPN sidecar, and Stremio addon profiles
+- **Phase 4:** WebDAV library access (Infuse/Kodi/rclone), Prometheus metrics, quality filters + IINA external player in Stremio addon
+
+## Phase 4 features
+
+| Feature | Docs |
+|---------|------|
+| WebDAV at `/webdav/` (read-only, Basic auth) | [docs/webdav.md](docs/webdav.md) |
+| Prometheus metrics at `/metrics` (`DEBRIDNEST_METRICS=1`) | [docs/operations.md](docs/operations.md) |
+| VPN sidecar (Gluetun) for torrent traffic | [docs/vpn.md](docs/vpn.md) |
+| Stremio quality filters (resolution, SDR, file size) | [docs/stremio-setup.md](docs/stremio-setup.md) |
+| IINA external player helper | [docs/stremio-setup.md](docs/stremio-setup.md) |
 
 ## Prerequisites
 
@@ -70,6 +81,12 @@ See [docs/remote-access.md](docs/remote-access.md) for Caddy TLS and Cloudflare 
 | `DEBRIDNEST_RETENTION_DAYS` | `30` | Auto-delete completed torrents after N days |
 | `DEBRIDNEST_DISK_QUOTA_GB` | `0` | Disk quota in GB (0 = unlimited) |
 | `DEBRIDNEST_DOWNLOAD_RATE_LIMIT_MBPS` | `0` | Download egress cap on `/dl/*` |
+| `DEBRIDNEST_WEBDAV_ENABLED` | `1` | WebDAV library access at `/webdav/` |
+| `DEBRIDNEST_WEBDAV_USER` / `DEBRIDNEST_WEBDAV_PASSWORD` | — | Custom WebDAV Basic auth (default: user `debridnest`, password = API token) |
+| `DEBRIDNEST_METRICS` | `0` | Enable Prometheus metrics at `/metrics` |
+| `PREFER_SDR` | `0` | Stremio addon: prefer SDR over HDR/DV |
+| `MAX_RESOLUTION` | `0` | Stremio addon: max resolution (`720`, `1080`, `2160`; `0` = any) |
+| `MAX_FILE_SIZE_GB` | `0` | Stremio addon: max torrent size in GB (`0` = unlimited) |
 
 ## Legal
 

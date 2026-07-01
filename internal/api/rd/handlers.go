@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/metrics"
 	"github.com/debridnest/debridnest/internal/storage"
 	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
 )
@@ -22,14 +23,16 @@ type Handler struct {
 	manager     *torrentmgr.Manager
 	signer      *links.Signer
 	rateLimiter *links.RateLimiter
+	metrics     *metrics.Collector
 }
 
-func NewHandler(cfg config.Config, manager *torrentmgr.Manager, signer *links.Signer) *Handler {
+func NewHandler(cfg config.Config, manager *torrentmgr.Manager, signer *links.Signer, m *metrics.Collector) *Handler {
 	return &Handler{
 		cfg:         cfg,
 		manager:     manager,
 		signer:      signer,
 		rateLimiter: links.NewRateLimiter(cfg.DownloadRateLimitMB),
+		metrics:     m,
 	}
 }
 
@@ -327,7 +330,16 @@ func (h *Handler) serveSigned(w http.ResponseWriter, r *http.Request, rawPath st
 	w.Header().Set("Content-Disposition", "inline; filename=\""+filename+"\"")
 	w.Header().Set("Accept-Ranges", "bytes")
 
-	http.ServeContent(w, r, filename, modTime, reader)
+	out := w
+	if h.metrics != nil {
+		var bcw *metrics.ByteCountWriter
+		bcw, out = metrics.WrapDownloadWriter(w)
+		defer func() {
+			h.metrics.RecordDownloadBytes(bcw.Bytes())
+		}()
+	}
+
+	http.ServeContent(out, r, filename, modTime, reader)
 }
 
 func torrentInfoResponse(cfg config.Config, rec *storage.TorrentRecord) map[string]any {

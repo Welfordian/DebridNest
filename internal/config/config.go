@@ -25,6 +25,10 @@ type Config struct {
 	StreamReadaheadMB   int64
 	SeekReadaheadMB     int64
 	SeekPreRollMB       int64
+	MetricsEnabled      bool
+	WebDAVUser          string
+	WebDAVPassword      string
+	WebDAVEnabled       bool
 }
 
 func (c Config) MinStreamBytes() int64 {
@@ -80,6 +84,8 @@ func Load() (Config, error) {
 	streamReadaheadMB, _ := strconv.ParseInt(getenv("DEBRIDNEST_STREAM_READAHEAD_MB", "32"), 10, 64)
 	seekReadaheadMB, _ := strconv.ParseInt(getenv("DEBRIDNEST_SEEK_READAHEAD_MB", "64"), 10, 64)
 	seekPreRollMB, _ := strconv.ParseInt(getenv("DEBRIDNEST_SEEK_PREROLL_MB", "8"), 10, 64)
+	metricsEnabled := os.Getenv("DEBRIDNEST_METRICS") == "1"
+	webdavEnabled := getenv("DEBRIDNEST_WEBDAV_ENABLED", "1") != "0"
 
 	return Config{
 		APIToken:            token,
@@ -99,7 +105,24 @@ func Load() (Config, error) {
 		StreamReadaheadMB:   streamReadaheadMB,
 		SeekReadaheadMB:     seekReadaheadMB,
 		SeekPreRollMB:       seekPreRollMB,
+		MetricsEnabled:      metricsEnabled,
+		WebDAVUser:          os.Getenv("DEBRIDNEST_WEBDAV_USER"),
+		WebDAVPassword:      os.Getenv("DEBRIDNEST_WEBDAV_PASSWORD"),
+		WebDAVEnabled:       webdavEnabled,
 	}, nil
+}
+
+// WebDAVAuth returns Basic auth credentials. Disabled when WebDAVEnabled is false.
+// Custom DEBRIDNEST_WEBDAV_USER/PASSWORD are used when both are set; otherwise user
+// "debridnest" with DEBRIDNEST_API_TOKEN as password.
+func (c Config) WebDAVAuth() (user, password string, ok bool) {
+	if !c.WebDAVEnabled {
+		return "", "", false
+	}
+	if c.WebDAVUser != "" && c.WebDAVPassword != "" {
+		return c.WebDAVUser, c.WebDAVPassword, true
+	}
+	return "debridnest", c.APIToken, true
 }
 
 func (c Config) DiskQuotaBytes() int64 {

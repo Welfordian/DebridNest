@@ -10,6 +10,8 @@ Authorization: Bearer <DEBRIDNEST_API_TOKEN>
 
 Public routes (no token): `/d/{linkID}`, `/dl/{expires}/{path}/{sig}`
 
+WebDAV (Basic auth): `/webdav/` — see [webdav.md](webdav.md). Disabled with `DEBRIDNEST_WEBDAV_ENABLED=0`.
+
 ## Implemented endpoints
 
 | Method | Path | Status | Notes |

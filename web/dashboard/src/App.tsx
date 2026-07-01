@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { getToken, setToken } from './api';
+import { clearToken, getToken, setToken } from './api';
 import Overview from './pages/Overview';
 import Torrents from './pages/Torrents';
 
@@ -8,6 +8,7 @@ type Tab = 'overview' | 'torrents';
 function LoginForm({ onLogin }: { onLogin: () => void }) {
   const [token, setTokenInput] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -17,6 +18,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
       return;
     }
 
+    setSubmitting(true);
     setToken(trimmed);
 
     try {
@@ -24,22 +26,29 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
         headers: { Authorization: `Bearer ${trimmed}` },
       });
       if (!res.ok) {
-        localStorage.removeItem('debridnest_token');
+        clearToken();
         setError('Invalid token');
         return;
       }
       onLogin();
     } catch {
-      localStorage.removeItem('debridnest_token');
+      clearToken();
       setError('Could not reach server');
+    } finally {
+      setSubmitting(false);
     }
   }
 
   return (
     <div className="login">
       <div className="login-card card">
-        <h1>DebridNest</h1>
-        <p className="muted">Enter your API token to continue.</p>
+        <div className="brand">
+          <span className="brand-mark">DN</span>
+          <div>
+            <h1>DebridNest</h1>
+            <p className="muted">Self-hosted debrid control panel</p>
+          </div>
+        </div>
         <form onSubmit={handleSubmit}>
           <label htmlFor="token">API token</label>
           <input
@@ -47,13 +56,13 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
             type="password"
             value={token}
             onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="Bearer token"
+            placeholder="DEBRIDNEST_API_TOKEN"
             autoComplete="off"
             autoFocus
           />
           {error && <p className="error">{error}</p>}
-          <button type="submit" className="btn btn-primary">
-            Sign in
+          <button type="submit" className="btn btn-primary" disabled={submitting}>
+            {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
       </div>
@@ -65,6 +74,11 @@ export default function App() {
   const [authenticated, setAuthenticated] = useState(() => !!getToken());
   const [tab, setTab] = useState<Tab>('overview');
 
+  function handleSignOut() {
+    clearToken();
+    setAuthenticated(false);
+  }
+
   if (!authenticated) {
     return <LoginForm onLogin={() => setAuthenticated(true)} />;
   }
@@ -72,8 +86,15 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>DebridNest Dashboard</h1>
-        <nav className="tabs">
+        <div className="header-brand">
+          <span className="brand-mark">DN</span>
+          <div>
+            <h1>DebridNest</h1>
+            <p className="header-subtitle">Dashboard</p>
+          </div>
+        </div>
+
+        <nav className="tabs" aria-label="Dashboard sections">
           <button
             type="button"
             className={tab === 'overview' ? 'tab active' : 'tab'}
@@ -89,6 +110,10 @@ export default function App() {
             Torrents
           </button>
         </nav>
+
+        <button type="button" className="btn btn-ghost" onClick={handleSignOut}>
+          Sign out
+        </button>
       </header>
 
       <main className="main">

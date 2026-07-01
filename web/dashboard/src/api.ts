@@ -3,12 +3,16 @@ const TOKEN_KEY = 'debridnest_token';
 export interface Stats {
   diskUsed: number;
   diskQuota: number;
+  diskQuotaGb: number;
   torrentCount: number;
   activeCount: number;
   downloadSpeed: number;
+  statusCounts: Record<string, number>;
   retentionDays: number;
   publicUrl: string;
   rateLimitMbps: number;
+  webdavEnabled: boolean;
+  metricsEnabled: boolean;
 }
 
 export interface Torrent {
@@ -18,6 +22,7 @@ export interface Torrent {
   status: string;
   progress: number;
   bytes: number;
+  size: number;
   speed: number;
   seeders: number;
   added: string;
@@ -29,6 +34,8 @@ export interface Config {
   retentionDays: number;
   diskQuotaGb: number;
   rateLimitMbps: number;
+  webdavEnabled: boolean;
+  metricsEnabled: boolean;
 }
 
 export function getToken(): string | null {

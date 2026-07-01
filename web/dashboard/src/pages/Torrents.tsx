@@ -1,55 +1,88 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   deleteTorrent,
   fetchTorrents,
   retryTorrent,
   type Torrent,
 } from '../api';
+import { usePolling } from '../hooks/usePolling';
+import {
+  formatBytes,
+  formatProgress,
+  formatRelativeTime,
+  formatSpeed,
+} from '../lib/format';
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** i;
-  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+type Filter = 'all' | 'active' | 'completed' | 'failed';
+
+const ACTIVE_STATUSES = new Set([
+  'downloading',
+  'queued',
+  'waiting_files_selection',
+  'magnet_conversion',
+]);
+const COMPLETED_STATUSES = new Set(['downloaded']);
+const FAILED_STATUSES = new Set(['error', 'dead']);
+
+function matchesFilter(torrent: Torrent, filter: Filter): boolean {
+  switch (filter) {
+    case 'active':
+      return ACTIVE_STATUSES.has(torrent.status);
+    case 'completed':
+      return COMPLETED_STATUSES.has(torrent.status);
+    case 'failed':
+      return FAILED_STATUSES.has(torrent.status);
+    default:
+      return true;
+  }
 }
 
-function formatProgress(progress: number): string {
-  return `${(progress * 100).toFixed(1)}%`;
+function ProgressCell({ progress, status }: { progress: number; status: string }) {
+  const pct = Math.min(100, Math.max(0, progress));
+  const done = status === 'downloaded';
+
+  return (
+    <div className="progress-cell">
+      <div className="mini-bar" aria-hidden="true">
+        <div className="mini-bar-fill" style={{ width: `${done ? 100 : pct}%` }} />
+      </div>
+      <span>{done ? '100.0%' : formatProgress(progress)}</span>
+    </div>
+  );
 }
 
 export default function Torrents() {
-  const [torrents, setTorrents] = useState<Torrent[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<Filter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const data = await fetchTorrents();
-      setTorrents(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load torrents');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const loader = useCallback(() => fetchTorrents(), []);
+  const { data: torrents, error, loading, updatedAt, refresh } = usePolling(loader);
 
-  useEffect(() => {
-    load();
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
-  }, [load]);
+  const filtered = useMemo(() => {
+    const items = torrents ?? [];
+    return items
+      .filter((t) => matchesFilter(t, filter))
+      .sort((a, b) => new Date(b.added).getTime() - new Date(a.added).getTime());
+  }, [torrents, filter]);
+
+  const counts = useMemo(() => {
+    const items = torrents ?? [];
+    return {
+      all: items.length,
+      active: items.filter((t) => matchesFilter(t, 'active')).length,
+      completed: items.filter((t) => matchesFilter(t, 'completed')).length,
+      failed: items.filter((t) => matchesFilter(t, 'failed')).length,
+    };
+  }, [torrents]);
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this torrent?')) return;
+    if (!confirm('Delete this torrent and its files?')) return;
     setBusyId(id);
     try {
       await deleteTorrent(id);
-      await load();
+      await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
+      alert(err instanceof Error ? err.message : 'Delete failed');
     } finally {
       setBusyId(null);
     }
@@ -59,24 +92,57 @@ export default function Torrents() {
     setBusyId(id);
     try {
       await retryTorrent(id);
-      await load();
+      await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Retry failed');
+      alert(err instanceof Error ? err.message : 'Retry failed');
     } finally {
       setBusyId(null);
     }
   }
 
-  if (loading && torrents.length === 0) {
-    return <p className="muted">Loading torrents…</p>;
+  if (loading && !torrents) {
+    return <p className="muted page-loading">Loading torrents…</p>;
   }
 
   return (
     <div className="torrents">
+      <div className="page-toolbar">
+        <div className="filter-tabs" role="tablist" aria-label="Torrent filters">
+          {([
+            ['all', 'All'],
+            ['active', 'Active'],
+            ['completed', 'Completed'],
+            ['failed', 'Failed'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={filter === key}
+              className={filter === key ? 'filter-tab active' : 'filter-tab'}
+              onClick={() => setFilter(key)}
+            >
+              {label}
+              <span className="filter-count">{counts[key]}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="toolbar-actions">
+          {updatedAt && <span className="muted toolbar-meta">Updated {formatRelativeTime(updatedAt)}</span>}
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
+            Refresh
+          </button>
+        </div>
+      </div>
+
       {error && <p className="error">{error}</p>}
 
-      {torrents.length === 0 ? (
-        <p className="muted">No torrents yet.</p>
+      {filtered.length === 0 ? (
+        <div className="empty-state card">
+          <p>{torrents?.length ? 'No torrents match this filter.' : 'No torrents yet.'}</p>
+          <p className="muted">Streams added from Stremio will appear here.</p>
+        </div>
       ) : (
         <div className="table-wrap">
           <table>
@@ -85,41 +151,55 @@ export default function Torrents() {
                 <th>Name</th>
                 <th>Status</th>
                 <th>Progress</th>
-                <th>Bytes</th>
+                <th>Size</th>
+                <th>Speed</th>
+                <th>Added</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {torrents.map((t) => (
-                <tr key={t.id}>
-                  <td className="name-cell" title={t.name}>
-                    {t.name}
-                  </td>
-                  <td>
-                    <span className={`status status-${t.status}`}>{t.status}</span>
-                  </td>
-                  <td>{formatProgress(t.progress)}</td>
-                  <td>{formatBytes(t.bytes)}</td>
-                  <td className="actions-cell">
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      disabled={busyId === t.id}
-                      onClick={() => handleDelete(t.id)}
-                    >
-                      Delete
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      disabled={busyId === t.id}
-                      onClick={() => handleRetry(t.id)}
-                    >
-                      Retry
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {filtered.map((t) => {
+                const size = t.size > 0 ? t.size : t.bytes;
+                const showSpeed = t.speed > 0 && ACTIVE_STATUSES.has(t.status);
+
+                return (
+                  <tr key={t.id}>
+                    <td className="name-cell" title={t.name}>
+                      <span className="name-primary">{t.name}</span>
+                      <span className="name-meta muted">{t.hash.slice(0, 12)}…</span>
+                    </td>
+                    <td>
+                      <span className={`status status-${t.status}`}>{t.status.replace(/_/g, ' ')}</span>
+                    </td>
+                    <td>
+                      <ProgressCell progress={t.progress} status={t.status} />
+                    </td>
+                    <td>{formatBytes(size)}</td>
+                    <td>{showSpeed ? formatSpeed(t.speed) : '—'}</td>
+                    <td className="muted">{formatRelativeTime(t.added)}</td>
+                    <td className="actions-cell">
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-sm"
+                        disabled={busyId === t.id}
+                        onClick={() => handleDelete(t.id)}
+                      >
+                        Delete
+                      </button>
+                      {FAILED_STATUSES.has(t.status) && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          disabled={busyId === t.id}
+                          onClick={() => handleRetry(t.id)}
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
