@@ -66,9 +66,10 @@ func (m *Manager) fireDownloadComplete(name string) {
 }
 
 type runtimeTorrent struct {
-	id   string
-	t    *torrent.Torrent
-	done chan struct{}
+	id        string
+	t         *torrent.Torrent
+	done      chan struct{}
+	startedAt time.Time
 }
 
 func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, settingsStore *settings.Store, s3Cfg objectstore.Config) (*Manager, error) {
@@ -419,7 +420,10 @@ func (m *Manager) FilePath(relativePath string) (string, error) {
 	return filepath.Join(m.filesDir, clean), nil
 }
 
-const magnetMetadataTimeout = 3 * time.Minute
+const (
+	magnetMetadataTimeout    = 3 * time.Minute
+	magnetMetadataStaleGrace = 15 * time.Second
+)
 
 func (m *Manager) waitTorrentInfo(t *torrent.Torrent) bool {
 	if t.Info() != nil {
@@ -434,7 +438,7 @@ func (m *Manager) waitTorrentInfo(t *torrent.Torrent) bool {
 }
 
 func (m *Manager) registerRuntimeTorrent(id string, t *torrent.Torrent) {
-	rt := &runtimeTorrent{id: id, t: t, done: make(chan struct{})}
+	rt := &runtimeTorrent{id: id, t: t, done: make(chan struct{}), startedAt: time.Now()}
 	m.mu.Lock()
 	m.active[id] = rt
 	m.mu.Unlock()
@@ -694,6 +698,9 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 	}
 
 	if rt.t.Info() == nil {
+		if isFailedTorrentStatus(rec.Status) || rec.Status == "downloaded" {
+			return
+		}
 		if rec.Status != "magnet_conversion" {
 			rec.Status = "magnet_conversion"
 			_ = m.db.UpdateTorrent(ctx, *rec)
@@ -806,7 +813,11 @@ func (m *Manager) resumeIncomplete(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	for _, rec := range items {
+		if m.reconcileStaleMagnetConversion(ctx, rec, now) {
+			continue
+		}
 		go m.resumeOne(rec)
 	}
 	return nil
@@ -894,7 +905,11 @@ func (m *Manager) backgroundLoop() {
 			if err != nil {
 				continue
 			}
+			now := time.Now()
 			for _, rec := range items {
+				if m.reconcileStaleMagnetConversion(ctx, rec, now) {
+					continue
+				}
 				m.mu.RLock()
 				_, ok := m.active[rec.ID]
 				m.mu.RUnlock()
@@ -907,6 +922,43 @@ func (m *Manager) backgroundLoop() {
 			}
 		}
 	}
+}
+
+func (m *Manager) reconcileStaleMagnetConversion(ctx context.Context, rec storage.TorrentRecord, now time.Time) bool {
+	if rec.Status != "magnet_conversion" {
+		return false
+	}
+
+	m.mu.RLock()
+	rt := m.active[rec.ID]
+	m.mu.RUnlock()
+	if rt != nil {
+		if rt.t != nil && rt.t.Info() != nil {
+			return false
+		}
+		if now.Sub(rt.startedAt) <= magnetMetadataTimeout+magnetMetadataStaleGrace {
+			return true
+		}
+		m.setError(ctx, rec.ID, "magnet_error")
+		m.dropRuntimeTorrent(rec.ID, rt.t)
+		return true
+	}
+
+	if isPlaceholderMagnetConversion(rec) && !rec.AddedAt.IsZero() && now.Sub(rec.AddedAt) > magnetMetadataTimeout+magnetMetadataStaleGrace {
+		m.setError(ctx, rec.ID, "magnet_error")
+		return true
+	}
+
+	return false
+}
+
+func isPlaceholderMagnetConversion(rec storage.TorrentRecord) bool {
+	return rec.Name == "" &&
+		rec.OriginalName == "" &&
+		rec.Bytes == 0 &&
+		rec.OriginalBytes == 0 &&
+		len(rec.InfoBytes) == 0 &&
+		len(rec.Files) == 0
 }
 
 func (m *Manager) enforceSeedingLimits(ctx context.Context) {

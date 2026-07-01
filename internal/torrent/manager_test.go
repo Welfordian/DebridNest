@@ -179,6 +179,160 @@ func TestAddMagnetRejectsInvalidMagnetWithoutCreatingRow(t *testing.T) {
 	}
 }
 
+func TestReconcileStaleMagnetConversionMarksOldInactiveRowsError(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	rec := storage.TorrentRecord{
+		ID:       "STALE001",
+		InfoHash: "1111111111111111111111111111111111111111",
+		Magnet:   "magnet:?xt=urn:btih:1111111111111111111111111111111111111111",
+		Status:   "magnet_conversion",
+		AddedAt:  now.Add(-(magnetMetadataTimeout + magnetMetadataStaleGrace + time.Minute)),
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create stale torrent: %v", err)
+	}
+
+	if !manager.reconcileStaleMagnetConversion(ctx, rec, now) {
+		t.Fatal("stale magnet conversion was not handled")
+	}
+	updated, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get stale torrent: %v", err)
+	}
+	if updated.Status != "magnet_error" {
+		t.Fatalf("status = %q, want magnet_error", updated.Status)
+	}
+}
+
+func TestReconcileStaleMagnetConversionOnlyFailsPlaceholderDuplicate(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hash := "4444444444444444444444444444444444444444"
+
+	downloaded := storage.TorrentRecord{
+		ID:            "DONE0001",
+		InfoHash:      hash,
+		Magnet:        "magnet:?xt=urn:btih:" + hash,
+		Name:          "movie.mkv",
+		OriginalName:  "movie",
+		Status:        "downloaded",
+		Progress:      100,
+		Bytes:         1024,
+		OriginalBytes: 1024,
+		InfoBytes:     []byte("info"),
+		AddedAt:       now.Add(-time.Hour),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "DONE0001", Path: "/movie.mkv", Bytes: 1024, Selected: true},
+		},
+	}
+	if err := db.CreateTorrent(ctx, downloaded); err != nil {
+		t.Fatalf("create downloaded torrent: %v", err)
+	}
+
+	stale := storage.TorrentRecord{
+		ID:       "STALEDUP",
+		InfoHash: hash,
+		Magnet:   "magnet:?xt=urn:btih:" + hash,
+		Status:   "magnet_conversion",
+		AddedAt:  now.Add(-(magnetMetadataTimeout + magnetMetadataStaleGrace + time.Minute)),
+	}
+	if err := db.CreateTorrent(ctx, stale); err != nil {
+		t.Fatalf("create stale duplicate: %v", err)
+	}
+
+	if !manager.reconcileStaleMagnetConversion(ctx, stale, now) {
+		t.Fatal("stale duplicate magnet conversion was not handled")
+	}
+	updatedStale, err := db.GetTorrent(ctx, stale.ID)
+	if err != nil {
+		t.Fatalf("get stale duplicate: %v", err)
+	}
+	if updatedStale.Status != "magnet_error" {
+		t.Fatalf("stale status = %q, want magnet_error", updatedStale.Status)
+	}
+	updatedDownloaded, err := db.GetTorrent(ctx, downloaded.ID)
+	if err != nil {
+		t.Fatalf("get downloaded torrent: %v", err)
+	}
+	if updatedDownloaded.Status != "downloaded" || len(updatedDownloaded.Files) != 1 {
+		t.Fatalf("downloaded torrent changed: status=%q files=%d", updatedDownloaded.Status, len(updatedDownloaded.Files))
+	}
+}
+
+func TestReconcileStaleMagnetConversionKeepsFreshInactiveRowsPending(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	rec := storage.TorrentRecord{
+		ID:       "FRESH001",
+		InfoHash: "2222222222222222222222222222222222222222",
+		Magnet:   "magnet:?xt=urn:btih:2222222222222222222222222222222222222222",
+		Status:   "magnet_conversion",
+		AddedAt:  now.Add(-time.Minute),
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create fresh torrent: %v", err)
+	}
+
+	if manager.reconcileStaleMagnetConversion(ctx, rec, now) {
+		t.Fatal("fresh magnet conversion was handled as stale")
+	}
+	updated, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get fresh torrent: %v", err)
+	}
+	if updated.Status != "magnet_conversion" {
+		t.Fatalf("status = %q, want magnet_conversion", updated.Status)
+	}
+}
+
+func TestReconcileStaleMagnetConversionDropsOldActiveRows(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	rec := storage.TorrentRecord{
+		ID:       "ACTIVEOLD",
+		InfoHash: "3333333333333333333333333333333333333333",
+		Magnet:   "magnet:?xt=urn:btih:3333333333333333333333333333333333333333",
+		Status:   "magnet_conversion",
+		AddedAt:  now,
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create active torrent: %v", err)
+	}
+
+	manager.mu.Lock()
+	manager.active[rec.ID] = &runtimeTorrent{
+		id:        rec.ID,
+		done:      make(chan struct{}),
+		startedAt: now.Add(-(magnetMetadataTimeout + magnetMetadataStaleGrace + time.Minute)),
+	}
+	manager.mu.Unlock()
+
+	if !manager.reconcileStaleMagnetConversion(ctx, rec, now) {
+		t.Fatal("stale active magnet conversion was not handled")
+	}
+	updated, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get active torrent: %v", err)
+	}
+	if updated.Status != "magnet_error" {
+		t.Fatalf("status = %q, want magnet_error", updated.Status)
+	}
+	manager.mu.RLock()
+	_, active := manager.active[rec.ID]
+	manager.mu.RUnlock()
+	if active {
+		t.Fatal("stale active torrent was not removed from active map")
+	}
+}
+
 func TestInstantAvailabilityShape(t *testing.T) {
 	manager, db := testManager(t)
 	ctx := context.Background()
