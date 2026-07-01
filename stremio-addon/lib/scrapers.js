@@ -1,6 +1,8 @@
 const jackett = require('./jackett')
 const dedupe = require('./dedupe')
 const seasonPacks = require('./seasonPacks')
+const rank = require('./rank')
+const quality = require('./quality')
 
 const JACKETT_CACHE_TTL_MS = Number(process.env.JACKETT_CACHE_TTL_MS || 600000)
 const searchCache = new Map()
@@ -45,12 +47,23 @@ async function searchAll(config, meta) {
       console.warn('[scrapers] Jackett returned 0 torrents — check indexers at http://localhost:9117')
     }
 
+    if (meta.type === 'series' && meta.season != null) {
+      torrents = torrents.map((torrent) => ({
+        ...torrent,
+        seasonPack: torrent.seasonPack || seasonPacks.isSeasonPackForMeta(torrent.title, meta),
+      }))
+    }
+
+    const qualityConfig = quality.resolveQualityConfig(config)
+    const episodeMatchCount = rank.countEpisodeMatches(torrents, meta, qualityConfig)
+
     if (config.preferSeasonPacks) {
       torrents = await seasonPacks.enrichWithSeasonPacks(
         config.jackettUrl,
         config.jackettApiKey,
         meta,
         torrents,
+        episodeMatchCount,
       )
     }
 

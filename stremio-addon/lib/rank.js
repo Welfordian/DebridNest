@@ -1,4 +1,5 @@
 const quality = require('./quality')
+const seasonPacks = require('./seasonPacks')
 
 const VIDEO_EXT = /\.(mp4|mkv|avi|webm|mov|m4v|wmv|flv|ts|m2ts)$/i
 
@@ -49,11 +50,14 @@ function looksLikeVideoRelease(title) {
 }
 
 function scoreTorrent(torrent, meta, qualityConfig = {}) {
-  if (!looksLikeVideoRelease(torrent.title)) {
+  const isSeasonPack = torrent.seasonPack
+    || seasonPacks.isSeasonPackForMeta(torrent.title, meta)
+
+  if (!isSeasonPack && !looksLikeVideoRelease(torrent.title)) {
     return -1
   }
 
-  const rankMeta = torrent.seasonPack
+  const rankMeta = isSeasonPack
     ? { ...meta, allowSeasonPack: true }
     : meta
 
@@ -101,6 +105,10 @@ function rankTorrents(torrents, meta, maxResults = 5, qualityConfig = {}) {
     .filter((entry) => entry.score >= 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults)
+}
+
+function countEpisodeMatches(torrents, meta, qualityConfig = {}) {
+  return rankTorrents(torrents, meta, torrents.length, qualityConfig).length
 }
 
 const DISPLAY_TITLE_MAX = 80
@@ -221,6 +229,7 @@ function formatStremioStreamDescription(entry, cached = false) {
 
 module.exports = {
   rankTorrents,
+  countEpisodeMatches,
   formatStreamDisplay,
   formatStreamLabel,
   formatPlaceholderLabel,

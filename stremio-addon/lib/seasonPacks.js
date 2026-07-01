@@ -14,6 +14,7 @@ function isSeasonPackTitle(title, season) {
   }
   const packPatterns = [
     new RegExp(`\\bs${s}\\b(?!e)`, 'i'),
+    new RegExp(`\\bs${season}\\b(?!e)`, 'i'),
     new RegExp(`season\\s*${season}\\b`, 'i'),
     /\bcomplete\b/i,
     /\bseason pack\b/i,
@@ -21,11 +22,48 @@ function isSeasonPackTitle(title, season) {
   return packPatterns.some((p) => p.test(t))
 }
 
-function needsSeasonPackFallback(torrents, meta, minResults = MIN_EPISODE_RESULTS) {
+function specifiesDifferentEpisode(title, meta) {
   if (meta.type !== 'series' || meta.season == null || meta.episode == null) {
     return false
   }
-  return !Array.isArray(torrents) || torrents.length < minResults
+  const t = String(title || '').toLowerCase()
+  const s = meta.season
+  const e = meta.episode
+  const sPad = pad2(s)
+  const epPatterns = [
+    new RegExp(`\\bs${sPad}e(\\d{2})\\b`, 'i'),
+    new RegExp(`\\bs${s}e(\\d+)\\b`, 'i'),
+    new RegExp(`\\b${s}x(\\d+)\\b`, 'i'),
+    new RegExp(`\\b${sPad}x(\\d{2})\\b`, 'i'),
+  ]
+  for (const pattern of epPatterns) {
+    const match = t.match(pattern)
+    if (match && Number(match[1]) !== e) {
+      return true
+    }
+  }
+  const episodeWord = t.match(/episode\s*(\d+)/i)
+  if (episodeWord && Number(episodeWord[1]) !== e) {
+    return true
+  }
+  return false
+}
+
+function isSeasonPackForMeta(title, meta) {
+  if (meta.type !== 'series' || meta.season == null) {
+    return false
+  }
+  if (specifiesDifferentEpisode(title, meta)) {
+    return false
+  }
+  return isSeasonPackTitle(title, meta.season)
+}
+
+function needsSeasonPackFallback(matchCount, meta, minResults = MIN_EPISODE_RESULTS) {
+  if (meta.type !== 'series' || meta.season == null || meta.episode == null) {
+    return false
+  }
+  return Number(matchCount || 0) < minResults
 }
 
 async function searchSeasonPacks(jackettUrl, jackettApiKey, meta) {
@@ -55,8 +93,8 @@ function mergeEpisodeAndSeasonResults(episodeTorrents, seasonTorrents) {
   return merged
 }
 
-async function enrichWithSeasonPacks(jackettUrl, jackettApiKey, meta, episodeTorrents) {
-  if (!needsSeasonPackFallback(episodeTorrents, meta)) {
+async function enrichWithSeasonPacks(jackettUrl, jackettApiKey, meta, episodeTorrents, matchCount) {
+  if (!needsSeasonPackFallback(matchCount, meta)) {
     return episodeTorrents
   }
 
@@ -66,7 +104,7 @@ async function enrichWithSeasonPacks(jackettUrl, jackettApiKey, meta, episodeTor
       return episodeTorrents
     }
     console.warn(
-      `[seasonPacks] Episode search returned ${episodeTorrents.length} result(s); adding ${seasonTorrents.length} season pack(s) for S${pad2(meta.season)}`,
+      `[seasonPacks] Only ${matchCount} episode match(es) in ${episodeTorrents.length} Jackett result(s); adding ${seasonTorrents.length} season pack(s) for S${pad2(meta.season)}`,
     )
     return mergeEpisodeAndSeasonResults(episodeTorrents, seasonTorrents.map((t) => ({
       ...t,
@@ -81,6 +119,8 @@ async function enrichWithSeasonPacks(jackettUrl, jackettApiKey, meta, episodeTor
 module.exports = {
   MIN_EPISODE_RESULTS,
   isSeasonPackTitle,
+  specifiesDifferentEpisode,
+  isSeasonPackForMeta,
   needsSeasonPackFallback,
   searchSeasonPacks,
   mergeEpisodeAndSeasonResults,

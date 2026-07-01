@@ -27,7 +27,7 @@ const DEFAULT_MAX_RESOLUTION = process.env.MAX_RESOLUTION || '0'
 const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
 const DEFAULT_DEDUPE_STREAMS = process.env.DEDUPE_STREAMS !== '0'
 const DEFAULT_PREFER_SEASON_PACKS = process.env.PREFER_SEASON_PACKS === '1'
-const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
+const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 10)
 const LIST_RESOLVE_COUNT = Number(process.env.LIST_RESOLVE_COUNT || 2)
 const CACHED_RESOLVE_WAIT_MS = Number(process.env.CACHED_RESOLVE_WAIT_MS || 8000)
 const STREAM_RESOLVE_WAIT_MS = Number(process.env.STREAM_RESOLVE_WAIT_MS || 10000)
@@ -227,7 +227,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.1.10',
+  version: '3.1.11',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [
@@ -447,9 +447,12 @@ builder.defineStreamHandler(async (args) => {
     placeholderCandidates.push({ entry, cached })
   }
 
+  const maxStreams = config.maxResults
+  const maxPlaceholders = Math.min(maxStreams, PLACEHOLDER_COUNT)
+
   let placeholders = 0
   for (const { entry, cached } of placeholderCandidates) {
-    if (placeholders >= PLACEHOLDER_COUNT) {
+    if (streams.length >= maxStreams || placeholders >= maxPlaceholders) {
       break
     }
 
