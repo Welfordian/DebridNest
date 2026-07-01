@@ -8,33 +8,40 @@ import (
 )
 
 type Config struct {
-	APIToken            string
-	PublicURL           string
-	DataDir             string
-	Listen              string
-	TorrentPort         string
-	LinkSecret          string
-	AutoSelectAfter     time.Duration
-	LinkTTL             time.Duration
-	Host                string
-	SplitGB             int
-	RetentionDays       int
-	DiskQuotaGB         int64
-	DownloadRateLimitMB float64
-	MinStreamMB         int64
-	StreamReadaheadMB   int64
-	SeekReadaheadMB     int64
-	SeekPreRollMB       int64
-	MetricsEnabled      bool
-	WebDAVUser          string
-	WebDAVPassword      string
-	WebDAVEnabled       bool
-	QBitUser            string
-	QBitPassword        string
-	SeedAfterComplete   bool
-	SeedRatio           float64
-	SeedMinutes         int
-	TranscodeEnabled    bool
+	APIToken                   string
+	PublicURL                  string
+	DataDir                    string
+	Listen                     string
+	TorrentPort                string
+	LinkSecret                 string
+	AutoSelectAfter            time.Duration
+	LinkTTL                    time.Duration
+	Host                       string
+	SplitGB                    int
+	RetentionDays              int
+	DiskQuotaGB                int64
+	DownloadRateLimitMB        float64
+	MinStreamMB                int64
+	StreamReadaheadMB          int64
+	SeekReadaheadMB            int64
+	SeekPreRollMB              int64
+	MetricsEnabled             bool
+	WebDAVUser                 string
+	WebDAVPassword             string
+	WebDAVEnabled              bool
+	QBitUser                   string
+	QBitPassword               string
+	SeedAfterComplete          bool
+	SeedRatio                  float64
+	SeedMinutes                int
+	TranscodeEnabled           bool
+	MultiUserEnabled           bool
+	WebhookDiscordURL          string
+	WebhookNtfyTopic           string
+	WebhookGotifyURL           string
+	WebhookGotifyToken         string
+	NotifyOnDownloadComplete   bool
+	NotifyOnQuotaWarning       bool
 }
 
 func (c Config) MinStreamBytes() int64 {
@@ -96,6 +103,9 @@ func Load() (Config, error) {
 	seedRatio, _ := strconv.ParseFloat(getenv("DEBRIDNEST_SEED_RATIO", "0"), 64)
 	seedMinutes, _ := strconv.Atoi(getenv("DEBRIDNEST_SEED_MINUTES", "0"))
 	transcodeEnabled := os.Getenv("DEBRIDNEST_TRANSCODE") == "1"
+	multiUserEnabled := os.Getenv("DEBRIDNEST_MULTI_USER") != "0"
+	notifyOnDownloadComplete := os.Getenv("DEBRIDNEST_NOTIFY_ON_DOWNLOAD_COMPLETE") == "1"
+	notifyOnQuotaWarning := os.Getenv("DEBRIDNEST_NOTIFY_ON_QUOTA_WARNING") == "1"
 
 	return Config{
 		APIToken:            token,
@@ -124,7 +134,14 @@ func Load() (Config, error) {
 		SeedAfterComplete:   seedAfterComplete,
 		SeedRatio:           seedRatio,
 		SeedMinutes:         seedMinutes,
-		TranscodeEnabled:    transcodeEnabled,
+		TranscodeEnabled:         transcodeEnabled,
+		MultiUserEnabled:         multiUserEnabled,
+		WebhookDiscordURL:        os.Getenv("DEBRIDNEST_WEBHOOK_DISCORD_URL"),
+		WebhookNtfyTopic:         os.Getenv("DEBRIDNEST_WEBHOOK_NTFY_TOPIC"),
+		WebhookGotifyURL:         os.Getenv("DEBRIDNEST_WEBHOOK_GOTIFY_URL"),
+		WebhookGotifyToken:       os.Getenv("DEBRIDNEST_WEBHOOK_GOTIFY_TOKEN"),
+		NotifyOnDownloadComplete: notifyOnDownloadComplete,
+		NotifyOnQuotaWarning:     notifyOnQuotaWarning,
 	}, nil
 }
 

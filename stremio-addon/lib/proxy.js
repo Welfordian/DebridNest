@@ -95,7 +95,12 @@ async function proxyStream(req, res, downloadUrl, apiUrl, options = {}) {
         try {
           url = await refreshUrl()
           continue
-        } catch {
+        } catch (err) {
+          if (err.message === 'Stream not ready') {
+            res.set('Retry-After', '2')
+            res.status(503).send('Stream not ready at this position')
+            return
+          }
           // fall through
         }
       }
@@ -116,7 +121,12 @@ async function proxyStream(req, res, downloadUrl, apiUrl, options = {}) {
         try {
           url = await refreshUrl()
           continue
-        } catch {
+        } catch (err) {
+          if (err.message === 'Stream not ready') {
+            res.set('Retry-After', '2')
+            res.status(503).send('Stream not ready at this position')
+            return
+          }
           // fall through
         }
       }

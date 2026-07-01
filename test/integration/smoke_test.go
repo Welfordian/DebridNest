@@ -11,13 +11,60 @@ import (
 	"testing"
 	"time"
 
+	"github.com/debridnest/debridnest/internal/activity"
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
 	"github.com/debridnest/debridnest/internal/metrics"
 	"github.com/debridnest/debridnest/internal/server"
+	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 	"github.com/debridnest/debridnest/internal/torrent"
 )
+
+func setupRouter(t *testing.T, cfg config.Config) http.Handler {
+	t.Helper()
+
+	db, err := storage.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	authSvc, err := auth.New(db, cfg.MultiUserEnabled, cfg.APIToken)
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+
+	settingsStore, err := settings.NewStore(db, cfg)
+	if err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+
+	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
+	if err != nil {
+		t.Fatalf("torrent manager: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	collector := metrics.New()
+	collector.StartStatsCollector(context.Background(), manager, time.Second)
+
+	router, err := server.NewRouter(server.Options{
+		Config:   cfg,
+		Manager:  manager,
+		Signer:   signer,
+		Metrics:  collector,
+		Auth:     authSvc,
+		Settings: settingsStore,
+		Activity: activity.New(db),
+	})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	return router
+}
 
 func TestSmoke(t *testing.T) {
 	tmp := t.TempDir()
@@ -35,33 +82,7 @@ func TestSmoke(t *testing.T) {
 		t.Fatalf("config: %v", err)
 	}
 
-	db, err := storage.Open(cfg.DataDir)
-	if err != nil {
-		t.Fatalf("storage: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer)
-	if err != nil {
-		t.Fatalf("torrent manager: %v", err)
-	}
-	t.Cleanup(func() { _ = manager.Close() })
-
-	collector := metrics.New()
-	collector.StartStatsCollector(context.Background(), manager, time.Second)
-
-	router, err := server.NewRouter(server.Options{
-		Config:  cfg,
-		Manager: manager,
-		Signer:  signer,
-		Metrics: collector,
-	})
-	if err != nil {
-		t.Fatalf("router: %v", err)
-	}
-
-	srv := httptest.NewServer(router)
+	srv := httptest.NewServer(setupRouter(t, cfg))
 	t.Cleanup(srv.Close)
 	client := srv.Client()
 
@@ -156,17 +177,29 @@ func TestMetricsDisabled(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
+	authSvc, err := auth.New(db, cfg.MultiUserEnabled, cfg.APIToken)
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	settingsStore, err := settings.NewStore(db, cfg)
+	if err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
 	if err != nil {
 		t.Fatalf("torrent manager: %v", err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 
 	router, err := server.NewRouter(server.Options{
-		Config:  cfg,
-		Manager: manager,
-		Signer:  signer,
+		Config:   cfg,
+		Manager:  manager,
+		Signer:   signer,
+		Auth:     authSvc,
+		Settings: settingsStore,
+		Activity: activity.New(db),
 	})
 	if err != nil {
 		t.Fatalf("router: %v", err)

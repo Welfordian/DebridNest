@@ -1,15 +1,20 @@
-import { useCallback, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
   fetchConfig,
+  fetchSettings,
   fetchSystem,
   joinUrl,
+  patchSettings,
   purgeTorrents,
   runCleanup,
   type Config,
   type RetentionResult,
+  type Settings,
+  type SettingsPatch,
   type SystemInfo,
 } from '../api';
 import CopyButton from '../components/CopyButton';
+import { useToast } from '../components/Toast';
 import { usePolling } from '../hooks/usePolling';
 import { formatBytes, formatUptime } from '../lib/format';
 
@@ -46,19 +51,88 @@ function serviceUrls(publicUrl: string) {
   };
 }
 
-export default function Settings() {
+function settingsToForm(settings: Settings) {
+  return {
+    retentionDays: String(settings.retentionDays ?? 0),
+    diskQuotaGb: String(settings.diskQuotaGb ?? 0),
+    downloadRateLimitMbps: String(settings.downloadRateLimitMbps ?? 0),
+    webhookDiscordUrl: settings.webhookDiscordUrl ?? '',
+    webhookNtfyTopic: settings.webhookNtfyTopic ?? '',
+    webhookGotifyUrl: settings.webhookGotifyUrl ?? '',
+    webhookGotifyToken: settings.webhookGotifyToken ?? '',
+    notifyOnDownloadComplete: settings.notifyOnDownloadComplete ?? false,
+    notifyOnQuotaWarning: settings.notifyOnQuotaWarning ?? false,
+  };
+}
+
+interface SettingsProps {
+  isAdmin: boolean;
+}
+
+export default function Settings({ isAdmin }: SettingsProps) {
+  const { toast } = useToast();
   const [cleanupResult, setCleanupResult] = useState<RetentionResult | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState<'completed' | 'failed' | null>(null);
   const [purgeMessage, setPurgeMessage] = useState<string | null>(null);
+  const [saveBusy, setSaveBusy] = useState(false);
+
+  const [form, setForm] = useState(() => ({
+    retentionDays: '0',
+    diskQuotaGb: '0',
+    downloadRateLimitMbps: '0',
+    webhookDiscordUrl: '',
+    webhookNtfyTopic: '',
+    webhookGotifyUrl: '',
+    webhookGotifyToken: '',
+    notifyOnDownloadComplete: false,
+    notifyOnQuotaWarning: false,
+  }));
 
   const configLoader = useCallback(async () => {
-    const [config, system] = await Promise.all([fetchConfig(), fetchSystem()]);
-    return { config, system };
+    const [config, system, settings] = await Promise.all([
+      fetchConfig(),
+      fetchSystem(),
+      fetchSettings(),
+    ]);
+    return { config, system, settings };
   }, []);
 
   const { data, error, loading, refresh } = usePolling(configLoader, { intervalMs: 30000 });
+
+  useEffect(() => {
+    if (data?.settings) {
+      setForm(settingsToForm(data.settings));
+    }
+  }, [data?.settings]);
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    setSaveBusy(true);
+
+    const patch: SettingsPatch = {
+      retentionDays: Number(form.retentionDays) || 0,
+      diskQuotaGb: Number(form.diskQuotaGb) || 0,
+      downloadRateLimitMbps: Number(form.downloadRateLimitMbps) || 0,
+      webhookDiscordUrl: form.webhookDiscordUrl.trim(),
+      webhookNtfyTopic: form.webhookNtfyTopic.trim(),
+      webhookGotifyUrl: form.webhookGotifyUrl.trim(),
+      webhookGotifyToken: form.webhookGotifyToken.trim(),
+      notifyOnDownloadComplete: form.notifyOnDownloadComplete,
+      notifyOnQuotaWarning: form.notifyOnQuotaWarning,
+    };
+
+    try {
+      await patchSettings(patch);
+      toast('Settings saved');
+      await refresh();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Save failed', 'error');
+    } finally {
+      setSaveBusy(false);
+    }
+  }
 
   async function handleCleanup() {
     setCleanupBusy(true);
@@ -109,11 +183,157 @@ export default function Settings() {
 
   if (!data) return null;
 
-  const { config, system } = data as { config: Config; system: SystemInfo };
+  const { config, system } = data as {
+    config: Config;
+    system: SystemInfo;
+    settings: Settings;
+  };
   const urls = serviceUrls(config.publicUrl);
 
   return (
     <div className="settings">
+      <form className="settings-editable" onSubmit={handleSave}>
+        <section className="card config-card settings-form">
+          <div className="card-heading">
+            <h2>Limits & retention</h2>
+            {isAdmin && (
+              <button type="submit" className="btn btn-primary btn-sm" disabled={saveBusy}>
+                {saveBusy ? 'Saving…' : 'Save changes'}
+              </button>
+            )}
+          </div>
+          <p className="muted section-desc">
+            {isAdmin
+              ? 'Adjust retention, disk quota, and download rate limit. Use 0 to disable a limit.'
+              : 'Current limits (read-only). Contact an admin to change these values.'}
+          </p>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="retention-days">Retention (days)</label>
+              <input
+                id="retention-days"
+                className="input"
+                type="number"
+                min={0}
+                value={form.retentionDays}
+                disabled={!isAdmin}
+                onChange={(e) => setForm((f) => ({ ...f, retentionDays: e.target.value }))}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="disk-quota">Disk quota (GB)</label>
+              <input
+                id="disk-quota"
+                className="input"
+                type="number"
+                min={0}
+                value={form.diskQuotaGb}
+                disabled={!isAdmin}
+                onChange={(e) => setForm((f) => ({ ...f, diskQuotaGb: e.target.value }))}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="rate-limit">Download cap (MB/s)</label>
+              <input
+                id="rate-limit"
+                className="input"
+                type="number"
+                min={0}
+                value={form.downloadRateLimitMbps}
+                disabled={!isAdmin}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, downloadRateLimitMbps: e.target.value }))
+                }
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="card config-card settings-form">
+          <div className="card-heading">
+            <h2>Notifications</h2>
+          </div>
+          <p className="muted section-desc">
+            Webhook targets and event toggles for download notifications.
+          </p>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="discord-webhook">Discord webhook URL</label>
+              <input
+                id="discord-webhook"
+                className="input"
+                type="url"
+                value={form.webhookDiscordUrl}
+                disabled={!isAdmin}
+                placeholder="https://discord.com/api/webhooks/…"
+                onChange={(e) => setForm((f) => ({ ...f, webhookDiscordUrl: e.target.value }))}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="ntfy-topic">ntfy topic</label>
+              <input
+                id="ntfy-topic"
+                className="input"
+                value={form.webhookNtfyTopic}
+                disabled={!isAdmin}
+                placeholder="debridnest-alerts"
+                onChange={(e) => setForm((f) => ({ ...f, webhookNtfyTopic: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="gotify-url">Gotify URL</label>
+              <input
+                id="gotify-url"
+                className="input"
+                type="url"
+                value={form.webhookGotifyUrl}
+                disabled={!isAdmin}
+                placeholder="https://gotify.example.com"
+                onChange={(e) => setForm((f) => ({ ...f, webhookGotifyUrl: e.target.value }))}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="gotify-token">Gotify token</label>
+              <input
+                id="gotify-token"
+                className="input"
+                type="password"
+                value={form.webhookGotifyToken}
+                disabled={!isAdmin}
+                autoComplete="off"
+                onChange={(e) => setForm((f) => ({ ...f, webhookGotifyToken: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="toggle-grid">
+            <label className="toggle-label">
+              <input
+                type="checkbox"
+                checked={form.notifyOnDownloadComplete}
+                disabled={!isAdmin}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, notifyOnDownloadComplete: e.target.checked }))
+                }
+              />
+              <span>Notify on download complete</span>
+            </label>
+            <label className="toggle-label">
+              <input
+                type="checkbox"
+                checked={form.notifyOnQuotaWarning}
+                disabled={!isAdmin}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, notifyOnQuotaWarning: e.target.checked }))
+                }
+              />
+              <span>Notify when disk quota &gt;90%</span>
+            </label>
+          </div>
+        </section>
+      </form>
+
       <section className="card config-card">
         <div className="card-heading">
           <h2>Service URLs</h2>
@@ -138,18 +358,6 @@ export default function Settings() {
         </div>
         <div className="config-grid">
           <ConfigRow label="Public URL" value={config.publicUrl || '—'} />
-          <ConfigRow
-            label="Retention"
-            value={config.retentionDays > 0 ? `${config.retentionDays} days` : 'Disabled'}
-          />
-          <ConfigRow
-            label="Disk quota"
-            value={config.diskQuotaGb > 0 ? `${config.diskQuotaGb} GB` : 'Not set'}
-          />
-          <ConfigRow
-            label="Download cap"
-            value={config.rateLimitMbps > 0 ? `${config.rateLimitMbps} MB/s` : 'Unlimited'}
-          />
           <ConfigRow label="WebDAV" value={config.webdavEnabled ? 'Enabled' : 'Disabled'} />
           <ConfigRow label="Metrics" value={config.metricsEnabled ? 'Enabled' : 'Disabled'} />
           {config.linkTtlHours != null && (
@@ -177,7 +385,10 @@ export default function Settings() {
           <ConfigRow label="Listen" value={system.listen || '—'} />
           <ConfigRow label="Torrent port" value={String(system.torrentPort ?? '—')} />
           <ConfigRow label="Uptime" value={formatUptime(system.uptimeSeconds)} />
-          <ConfigRow label="Started" value={system.startedAt ? new Date(system.startedAt).toLocaleString() : '—'} />
+          <ConfigRow
+            label="Started"
+            value={system.startedAt ? new Date(system.startedAt).toLocaleString() : '—'}
+          />
         </div>
         {system.features && Object.keys(system.features).length > 0 && (
           <div className="feature-tags">

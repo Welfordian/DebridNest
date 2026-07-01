@@ -19,6 +19,53 @@ Open `http://localhost:8080/dashboard/` after starting DebridNest.
 2. **Overview** — disk usage, active downloads, aggregate speed
 3. **Torrents** — list, delete, retry failed jobs
 
+## Multi-user authentication
+
+By default (`DEBRIDNEST_MULTI_USER` unset or `1`), DebridNest stores users in SQLite and validates per-user API tokens. Set `DEBRIDNEST_MULTI_USER=0` for legacy single-token mode (only `DEBRIDNEST_API_TOKEN` is accepted).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEBRIDNEST_MULTI_USER` | `1` | `0` = legacy single shared token; `1` = per-user tokens in DB |
+
+On first start with multi-user enabled, an **owner** admin user is bootstrapped using the hash of `DEBRIDNEST_API_TOKEN`. Existing deployments can keep using that token; create additional users via the API.
+
+All routes require `Authorization: Bearer <token>`.
+
+### Current user
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/me
+```
+
+Returns `{"name":"owner","role":"admin","admin":true}`.
+
+### User management (admin only)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/users` | List users (no token hashes) |
+| POST | `/api/v1/users` | Create user `{"name","role"}` — returns token once |
+| DELETE | `/api/v1/users/{id}` | Delete user |
+| POST | `/api/v1/users/{id}/rotate-token` | Rotate token — returns new token once |
+
+Admin-only routes also include purge, settings PATCH, activity log, and server logs.
+
+### Runtime settings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/settings` | Merged env defaults + runtime overrides |
+| PATCH | `/api/v1/settings` | Update retention, quota, rate limit, webhooks (admin) |
+
+### Activity and logs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/activity?limit=50&offset=0` | Audit log (admin) |
+| GET | `/api/v1/logs?limit=200` | Recent server log lines (admin) |
+
+qBittorrent login (`/api/v2/auth/login`) accepts the legacy qBit username/password **or** any valid API token in the password field.
+
 ## Admin API
 
 All routes require `Authorization: Bearer <DEBRIDNEST_API_TOKEN>`:

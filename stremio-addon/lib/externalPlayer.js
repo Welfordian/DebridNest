@@ -14,15 +14,20 @@ function cleanup() {
 
 setInterval(cleanup, 60_000).unref()
 
-function buildIinaUrl(streamUrl) {
-  return `iina://weblink?url=${encodeURIComponent(streamUrl)}`
+function buildIinaUrl(targetUrl) {
+  return `iina://open?url=${encodeURIComponent(targetUrl)}`
 }
 
-function registerStream(streamUrl, label = '') {
+function buildPlayUrl(streamId, addonBaseUrl) {
+  return `${addonBaseUrl.replace(/\/+$/, '')}/play/${streamId}`
+}
+
+function registerStream(meta = {}) {
   const id = crypto.randomBytes(12).toString('hex')
   streams.set(id, {
-    url: streamUrl,
-    label,
+    directUrl: meta.directUrl || null,
+    progressToken: meta.progressToken || null,
+    label: meta.label || '',
     expiresAt: Date.now() + TTL_MS,
   })
   return id
@@ -41,11 +46,11 @@ function getStream(id) {
   return entry
 }
 
-function buildOpenPageHtml({ streamUrl, label, iinaUrl, copyPageUrl }) {
+function buildOpenPageHtml({ streamUrl, label, readyUrl, copyPageUrl }) {
   const safeLabel = escapeHtml(label || 'DebridNest stream')
   const safeStreamUrl = escapeHtml(streamUrl)
-  const safeIinaUrl = escapeHtml(iinaUrl)
   const safeCopyPageUrl = escapeHtml(copyPageUrl)
+  const iinaLaunchUrl = `${copyPageUrl}?format=iina`
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -60,27 +65,36 @@ function buildOpenPageHtml({ streamUrl, label, iinaUrl, copyPageUrl }) {
     a, button { font-size: 1rem; padding: 0.75rem 1rem; border-radius: 8px; cursor: pointer; text-align: center; text-decoration: none; }
     .primary { background: #8A5AAB; color: white; border: 0; }
     .secondary { background: #f0f0f0; color: #222; border: 1px solid #ccc; }
+    .disabled { opacity: 0.5; pointer-events: none; }
     input { width: 100%; font-size: 0.85rem; padding: 0.5rem; margin-top: 0.5rem; }
     .hint { color: #666; font-size: 0.9rem; }
+    #status { margin: 1rem 0; }
     code { word-break: break-all; }
   </style>
 </head>
 <body>
   <h1>${safeLabel}</h1>
-  <p class="hint">Use IINA on macOS when Stremio playback fails or for HDR/codec issues.</p>
+  <p id="status" class="hint">Waiting for DebridNest to buffer the stream…</p>
   <div class="actions">
-    <a class="primary" href="${safeIinaUrl}">Open in IINA</a>
-    <button type="button" class="secondary" id="copyIina">Copy IINA URL</button>
-    <button type="button" class="secondary" id="copyStream">Copy stream URL</button>
+    <a class="primary disabled" id="openIina" href="${escapeHtml(iinaLaunchUrl)}">Open in IINA</a>
+    <button type="button" class="secondary" id="copyIina" disabled>Copy IINA URL</button>
+    <button type="button" class="secondary" id="copyStream" disabled>Copy stream URL</button>
     <button type="button" class="secondary" id="copyPage">Copy this page URL</button>
   </div>
-  <p class="hint">Stream URL (for VLC or other players):</p>
-  <input id="streamUrl" readonly value="${safeStreamUrl}" />
+  <p class="hint">Direct stream URL (for VLC or other players):</p>
+  <input id="streamUrl" readonly value="" />
   <p class="hint">Share link: <code>${safeCopyPageUrl}</code></p>
   <script>
-    const iinaUrl = ${JSON.stringify(iinaUrl)};
-    const streamUrl = ${JSON.stringify(streamUrl)};
+    const readyUrl = ${JSON.stringify(readyUrl)};
+    const fallbackPlayUrl = ${JSON.stringify(streamUrl)};
+    const iinaLaunchUrl = ${JSON.stringify(iinaLaunchUrl)};
     const pageUrl = ${JSON.stringify(copyPageUrl)};
+    const openIina = document.getElementById('openIina');
+    const status = document.getElementById('status');
+    const streamInput = document.getElementById('streamUrl');
+    let directUrl = '';
+    let iinaUrl = '';
+
     async function copy(text, btn, label) {
       try {
         await navigator.clipboard.writeText(text);
@@ -90,9 +104,37 @@ function buildOpenPageHtml({ streamUrl, label, iinaUrl, copyPageUrl }) {
         window.prompt('Copy:', text);
       }
     }
-    document.getElementById('copyIina').onclick = (e) => copy(iinaUrl, e.target, 'Copy IINA URL');
-    document.getElementById('copyStream').onclick = (e) => copy(streamUrl, e.target, 'Copy stream URL');
+
+    function markReady(url) {
+      directUrl = url;
+      iinaUrl = 'iina://open?url=' + encodeURIComponent(url);
+      status.textContent = 'Stream ready — open in IINA or copy the direct URL below.';
+      openIina.classList.remove('disabled');
+      openIina.href = iinaLaunchUrl;
+      streamInput.value = url;
+      document.getElementById('copyIina').disabled = false;
+      document.getElementById('copyStream').disabled = false;
+      document.getElementById('copyIina').onclick = (e) => copy(iinaUrl, e.target, 'Copy IINA URL');
+      document.getElementById('copyStream').onclick = (e) => copy(url, e.target, 'Copy stream URL');
+    }
+
     document.getElementById('copyPage').onclick = (e) => copy(pageUrl, e.target, 'Copy this page URL');
+
+    async function pollReady() {
+      try {
+        const res = await fetch(readyUrl);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ready && data.url) {
+            markReady(data.url);
+            return;
+          }
+        }
+      } catch {}
+      setTimeout(pollReady, 2000);
+    }
+
+    pollReady();
   </script>
 </body>
 </html>`
@@ -108,6 +150,7 @@ function escapeHtml(value) {
 
 module.exports = {
   buildIinaUrl,
+  buildPlayUrl,
   registerStream,
   getStream,
   buildOpenPageHtml,

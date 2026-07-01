@@ -3,9 +3,11 @@ package rd
 import (
 	"net/http"
 	"strings"
+
+	"github.com/debridnest/debridnest/internal/auth"
 )
 
-func AuthMiddleware(token string) func(http.Handler) http.Handler {
+func AuthMiddleware(authSvc *auth.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -13,13 +15,7 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") {
-				writeError(w, http.StatusUnauthorized, "bad_token")
-				return
-			}
-			got := strings.TrimPrefix(auth, "Bearer ")
-			if got != token {
+			if _, ok := authSvc.ValidateToken(r.Context(), r.Header.Get("Authorization")); !ok {
 				writeError(w, http.StatusUnauthorized, "bad_token")
 				return
 			}

@@ -12,6 +12,7 @@ const progressHandler = require('./lib/progressHandler')
 const jackettConfig = require('./lib/jackettConfig')
 const quality = require('./lib/quality')
 const externalPlayer = require('./lib/externalPlayer')
+const playHandler = require('./lib/playHandler')
 
 const PORT = Number(process.env.PORT || 7000)
 const ADDON_BASE_URL = process.env.ADDON_BASE_URL || `http://127.0.0.1:${PORT}`
@@ -27,6 +28,7 @@ const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
 const DEFAULT_DEDUPE_STREAMS = process.env.DEDUPE_STREAMS === '1'
 const DEFAULT_PREFER_SEASON_PACKS = process.env.PREFER_SEASON_PACKS === '1'
 const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
+const STREAM_RESOLVE_WAIT_MS = Number(process.env.STREAM_RESOLVE_WAIT_MS || 20000)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
 
@@ -79,31 +81,38 @@ function maxResolutionDefaultOption() {
   return String(parsed)
 }
 
-function buildStreamObject(entry, streamUrl, options = {}) {
-  const { cached = false, placeholder = false } = options
+function buildStreamObject(entry, options = {}) {
+  const { directUrl = null, progressToken = null, cached = false, placeholder = false } = options
   const label = placeholder
     ? rank.formatPlaceholderLabel(entry)
     : rank.formatStreamLabel(entry, cached)
   const title = entry?.torrent?.title || label
 
+  const streamId = externalPlayer.registerStream({
+    directUrl,
+    progressToken,
+    label: title,
+  })
+  const playUrl = externalPlayer.buildPlayUrl(streamId, ADDON_BASE_URL)
+  const openUrl = `${ADDON_BASE_URL}/open/${streamId}`
+  const iinaLaunchUrl = directUrl
+    ? externalPlayer.buildIinaUrl(directUrl)
+    : `${openUrl}?format=iina`
+
   const stream = {
     name: label,
-    title,
-    url: streamUrl,
+    title: `${title}\nIINA: ${openUrl}`,
+    url: directUrl || playUrl,
+    behaviorHints: {
+      playerUrl: iinaLaunchUrl,
+      openInExternal: openUrl,
+    },
   }
 
   if (placeholder) {
-    stream.behaviorHints = { notWebReady: true }
-    return stream
+    stream.behaviorHints.notWebReady = true
   }
 
-  const streamId = externalPlayer.registerStream(streamUrl, title)
-  const openUrl = `${ADDON_BASE_URL}/open/${streamId}`
-  stream.title = `${title}\nIINA: ${openUrl}`
-  stream.behaviorHints = {
-    playerUrl: externalPlayer.buildIinaUrl(streamUrl),
-    openInExternal: openUrl,
-  }
   return stream
 }
 
@@ -141,7 +150,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.1.0',
+  version: '3.1.6',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [
@@ -257,8 +266,8 @@ builder.defineStreamHandler(async (args) => {
     const resolved = await debridnest.resolveMagnet(config.apiUrl, config.apiToken, magnet)
     return {
       streams: [buildStreamObject(
-        { torrent: { title: resolved.filename || 'DebridNest' }, quality: { label: '' }, source: '' },
-        resolved.download,
+        { torrent: { title: resolved.filename || 'DebridNest' } },
+        { directUrl: resolved.download },
       )],
     }
   }
@@ -269,13 +278,30 @@ builder.defineStreamHandler(async (args) => {
 
   const meta = await cinemeta.resolveMetadata(args.type, args.id)
   if (!meta) {
+    console.warn(`[streams] Could not resolve metadata for ${args.type} id=${args.id}`)
+    return { streams: [] }
+  }
+
+  if (args.type === 'series' && (meta.season == null || meta.episode == null)) {
+    console.warn(`[streams] Series request missing season/episode in id=${args.id}`)
     return { streams: [] }
   }
 
   const qualityConfig = getQualityConfig(config)
   const torrents = await scrapers.searchAll(config, meta)
+  if (!torrents.length) {
+    console.warn(
+      `[streams] No Jackett results for ${meta.title || meta.imdbId}`
+      + (meta.season != null ? ` S${meta.season}E${meta.episode}` : ''),
+    )
+  }
   const ranked = rank.rankTorrents(torrents, meta, config.maxResults * 2, qualityConfig)
   if (!ranked.length) {
+    if (torrents.length) {
+      console.warn(
+        `[streams] ${torrents.length} Jackett results filtered out for ${meta.title} S${meta.season}E${meta.episode}`,
+      )
+    }
     return { streams: [] }
   }
 
@@ -288,21 +314,39 @@ builder.defineStreamHandler(async (args) => {
 
   for (const entry of ordered) {
     const cached = rank.isEntryCached(entry, availability)
+    let resolved = null
 
     if (cached) {
       try {
-        const resolved = await debridnest.resolveCachedOnly(
+        resolved = await debridnest.resolveCachedOnly(
           config.apiUrl,
           config.apiToken,
           entry.torrent.magnet,
         )
-        if (resolved) {
-          streams.push(buildStreamObject(entry, resolved.download, { cached: true }))
-          continue
-        }
       } catch {
-        // fall through to placeholder
+        resolved = null
       }
+    }
+
+    if (!resolved && streams.length === 0) {
+      try {
+        resolved = await debridnest.resolveStreamableQuick(
+          config.apiUrl,
+          config.apiToken,
+          entry.torrent.magnet,
+          { maxWaitMs: STREAM_RESOLVE_WAIT_MS },
+        )
+      } catch {
+        resolved = null
+      }
+    }
+
+    if (resolved) {
+      streams.push(buildStreamObject(entry, {
+        directUrl: resolved.download,
+        cached: resolved.info?.status === 'downloaded',
+      }))
+      continue
     }
 
     if (placeholders >= PLACEHOLDER_COUNT) {
@@ -310,22 +354,20 @@ builder.defineStreamHandler(async (args) => {
     }
 
     try {
-      const torrentId = await debridnest.startDownload(
-        config.apiUrl,
-        config.apiToken,
-        entry.torrent.magnet,
-      )
-      const token = progress.createJob({
-        torrentId,
+      const progressToken = progress.createJob({
+        magnet: entry.torrent.magnet,
         apiUrl: config.apiUrl,
         apiToken: config.apiToken,
         label: entry.torrent.title,
       })
-      streams.push(buildStreamObject(
-        entry,
-        `${ADDON_BASE_URL}/progress/${token}`,
-        { placeholder: true },
-      ))
+      const job = progress.getJob(progressToken)
+      if (job) {
+        progressHandler.ensureTorrentStarted(job).catch(() => {})
+      }
+      streams.push(buildStreamObject(entry, {
+        progressToken,
+        placeholder: true,
+      }))
       placeholders++
     } catch {
       // skip failed starts
@@ -364,28 +406,70 @@ app.get('/resolve', async (req, res) => {
   }
 })
 
-app.get('/open/:streamId', (req, res) => {
+app.get('/ready/:streamId', async (req, res) => {
+  const entry = externalPlayer.getStream(req.params.streamId)
+  if (!entry) {
+    res.status(404).json({ ready: false, error: 'Stream link expired or not found' })
+    return
+  }
+
+  try {
+    const url = await playHandler.resolvePlayUrl(entry)
+    res.json({ ready: true, url })
+  } catch (err) {
+    if (err.message === 'Stream not ready') {
+      res.status(503).json({ ready: false })
+      return
+    }
+    res.status(502).json({ ready: false, error: err.message })
+  }
+})
+
+app.get('/open/:streamId', async (req, res) => {
   const entry = externalPlayer.getStream(req.params.streamId)
   if (!entry) {
     res.status(404).send('Stream link expired or not found')
     return
   }
 
-  const iinaUrl = externalPlayer.buildIinaUrl(entry.url)
+  const playUrl = externalPlayer.buildPlayUrl(req.params.streamId, ADDON_BASE_URL)
   const pageUrl = `${ADDON_BASE_URL}/open/${req.params.streamId}`
+  const readyUrl = `${ADDON_BASE_URL}/ready/${req.params.streamId}`
 
   if (req.query.format === 'iina') {
-    res.redirect(302, iinaUrl)
+    try {
+      const downloadUrl = await playHandler.waitForPlayUrl(entry)
+      res.redirect(302, externalPlayer.buildIinaUrl(downloadUrl))
+    } catch (err) {
+      console.error(`[open/iina] ${req.params.streamId}: ${err.message}`)
+      res.status(504).send(`Still buffering: ${entry.label || 'stream'}. Open ${pageUrl} in your browser and retry.`)
+    }
     return
   }
 
   res.setHeader('content-type', 'text/html')
   res.end(externalPlayer.buildOpenPageHtml({
-    streamUrl: entry.url,
+    streamUrl: playUrl,
     label: entry.label,
-    iinaUrl,
+    readyUrl,
     copyPageUrl: pageUrl,
   }))
+})
+
+app.get('/play/:streamId', async (req, res) => {
+  const entry = externalPlayer.getStream(req.params.streamId)
+  if (!entry) {
+    res.status(404).send('Stream link expired or not found')
+    return
+  }
+
+  try {
+    const downloadUrl = await playHandler.waitForPlayUrl(entry)
+    res.redirect(302, downloadUrl)
+  } catch (err) {
+    console.error(`[play] ${req.params.streamId}: ${err.message}`)
+    res.status(504).send(`Timed out buffering: ${entry.label || 'stream'}. Try another stream source.`)
+  }
 })
 
 app.get('/progress/:token', async (req, res) => {

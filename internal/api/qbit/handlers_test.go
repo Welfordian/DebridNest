@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/storage"
 )
@@ -26,6 +27,20 @@ func newTestRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
 	h.Mount(r)
 	return r
+}
+
+func newTestHandler(t *testing.T, cfg config.Config) *Handler {
+	t.Helper()
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	authSvc, err := auth.New(db, false, cfg.APIToken)
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	return NewHandler(cfg, nil, authSvc)
 }
 
 func postForm(t *testing.T, h *Handler, path string, values map[string]string) (string, *httptest.ResponseRecorder) {
@@ -131,7 +146,7 @@ func TestMatchesFilter(t *testing.T) {
 
 func TestLogin(t *testing.T) {
 	cfg := testConfig()
-	h := NewHandler(cfg, nil)
+	h := newTestHandler(t, cfg)
 
 	t.Run("success", func(t *testing.T) {
 		body, rec := postForm(t, h, "/api/v2/auth/login", map[string]string{
@@ -166,7 +181,7 @@ func TestLogin(t *testing.T) {
 
 func TestAppVersionRequiresAuth(t *testing.T) {
 	cfg := testConfig()
-	h := NewHandler(cfg, nil)
+	h := newTestHandler(t, cfg)
 
 	rec := httptestRequest(t, h, http.MethodGet, "/api/v2/app/version", nil)
 	if rec.Code != http.StatusForbidden {

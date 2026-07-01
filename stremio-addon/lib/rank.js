@@ -16,13 +16,22 @@ function matchesEpisode(title, meta) {
   if (meta.type !== 'series' || meta.season == null || meta.episode == null) {
     return true
   }
+  if (meta.allowSeasonPack) {
+    return true
+  }
   const t = title.toLowerCase()
-  const s = pad2(meta.season)
-  const e = pad2(meta.episode)
+  const s = meta.season
+  const e = meta.episode
+  const sPad = pad2(s)
+  const ePad = pad2(e)
   const patterns = [
-    new RegExp(`s${s}e${e}\\b`, 'i'),
-    new RegExp(`${meta.season}x${meta.episode}\\b`, 'i'),
-    new RegExp(`season ${meta.season}.*episode ${meta.episode}`, 'i'),
+    new RegExp(`\\bs${sPad}e${ePad}\\b`, 'i'),
+    new RegExp(`\\bs${s}e${e}\\b`, 'i'),
+    new RegExp(`\\b${s}x${e}\\b`, 'i'),
+    new RegExp(`\\b${s}x${ePad}\\b`, 'i'),
+    new RegExp(`\\b${sPad}x${ePad}\\b`, 'i'),
+    new RegExp(`season\\s*${s}.*episode\\s*${e}`, 'i'),
+    new RegExp(`\\b${ePad}\\b.*\\bs${sPad}\\b`, 'i'),
   ]
   return patterns.some((p) => p.test(t))
 }
@@ -43,7 +52,12 @@ function scoreTorrent(torrent, meta, qualityConfig = {}) {
   if (!looksLikeVideoRelease(torrent.title)) {
     return -1
   }
-  if (!matchesEpisode(torrent.title, meta)) {
+
+  const rankMeta = torrent.seasonPack
+    ? { ...meta, allowSeasonPack: true }
+    : meta
+
+  if (!matchesEpisode(torrent.title, rankMeta)) {
     return -1
   }
 

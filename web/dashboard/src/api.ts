@@ -88,6 +88,11 @@ export interface PurgeResult {
   deleted: number;
 }
 
+export interface BatchDeleteResult {
+  deleted: number;
+  failed: string[];
+}
+
 export type PurgeFilter = 'completed' | 'failed';
 
 export function getToken(): string | null {
@@ -157,8 +162,12 @@ export function deleteTorrent(id: string): Promise<void> {
   });
 }
 
-export async function deleteTorrents(ids: string[]): Promise<void> {
-  await Promise.all(ids.map((id) => deleteTorrent(id)));
+export async function deleteTorrents(ids: string[]): Promise<BatchDeleteResult> {
+  return request<BatchDeleteResult>('/api/v1/torrents/batch-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
 }
 
 export function retryTorrent(id: string): Promise<void> {
@@ -224,4 +233,121 @@ export function joinUrl(base: string, path: string): string {
   const trimmed = base.replace(/\/+$/, '');
   const suffix = path.startsWith('/') ? path : `/${path}`;
   return `${trimmed}${suffix}`;
+}
+
+export interface Me {
+  name: string;
+  role: string;
+  admin: boolean;
+}
+
+export interface Settings {
+  retentionDays: number;
+  diskQuotaGb: number;
+  downloadRateLimitMbps: number;
+  webhookDiscordUrl?: string;
+  webhookNtfyTopic?: string;
+  webhookGotifyUrl?: string;
+  webhookGotifyToken?: string;
+  notifyOnDownloadComplete?: boolean;
+  notifyOnQuotaWarning?: boolean;
+}
+
+export interface SettingsPatch {
+  retentionDays?: number;
+  diskQuotaGb?: number;
+  downloadRateLimitMbps?: number;
+  webhookDiscordUrl?: string;
+  webhookNtfyTopic?: string;
+  webhookGotifyUrl?: string;
+  webhookGotifyToken?: string;
+  notifyOnDownloadComplete?: boolean;
+  notifyOnQuotaWarning?: boolean;
+}
+
+export interface DashboardUser {
+  id: string;
+  name: string;
+  role: string;
+  disabled?: boolean;
+  createdAt?: string;
+}
+
+export interface CreateUserRequest {
+  name: string;
+  role?: string;
+}
+
+export interface CreateUserResponse {
+  id: string;
+  name: string;
+  role: string;
+  token: string;
+}
+
+export interface RotateTokenResponse {
+  token: string;
+}
+
+export interface ActivityEvent {
+  id: number;
+  userId: string;
+  userName: string;
+  action: string;
+  details?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export function fetchMe(): Promise<Me> {
+  return request<Me>('/api/v1/me');
+}
+
+export function fetchSettings(): Promise<Settings> {
+  return request<Settings>('/api/v1/settings');
+}
+
+export function patchSettings(patch: SettingsPatch): Promise<Settings> {
+  return request<Settings>('/api/v1/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+export function fetchUsers(): Promise<DashboardUser[]> {
+  return request<DashboardUser[]>('/api/v1/users');
+}
+
+export function createUser(body: CreateUserRequest): Promise<CreateUserResponse> {
+  return request<CreateUserResponse>('/api/v1/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteUser(id: string): Promise<void> {
+  return request<void>(`/api/v1/users/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function rotateUserToken(id: string): Promise<RotateTokenResponse> {
+  return request<RotateTokenResponse>(
+    `/api/v1/users/${encodeURIComponent(id)}/rotate-token`,
+    { method: 'POST' },
+  );
+}
+
+export function fetchActivity(limit = 50, offset = 0): Promise<ActivityEvent[]> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<ActivityEvent[]>(`/api/v1/activity?${params}`);
+}
+
+export function fetchLogs(limit = 200): Promise<string[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request<string[]>(`/api/v1/logs?${params}`);
 }

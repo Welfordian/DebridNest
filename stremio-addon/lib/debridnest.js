@@ -1,5 +1,7 @@
 const VIDEO_EXT = /\.(mp4|mkv|avi|webm|mov|m4v|wmv|flv|ts|m2ts)$/i
 
+const FETCH_TIMEOUT_MS = Number(process.env.DEBRIDNEST_FETCH_TIMEOUT_MS || 30000)
+
 function normalizeBaseUrl(url) {
   return String(url || '').replace(/\/+$/, '')
 }
@@ -15,6 +17,7 @@ async function apiRequest(baseUrl, token, method, path, body) {
     headers: {
       Authorization: `Bearer ${token}`,
     },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   }
 
   if (body) {
@@ -205,20 +208,16 @@ async function resolveCachedOnly(baseUrl, token, magnet, options = {}) {
   const torrentId = added.id
 
   while (Date.now() - startedAt < maxWaitMs) {
-    const info = await getTorrentInfo(baseUrl, token, torrentId)
-    if (info.status === 'downloaded' && info.links && info.links.length) {
-      const hostLink = pickHostLink(info)
-      if (!hostLink) {
-        return null
+    try {
+      const resolved = await resolveStreamUrl(baseUrl, token, torrentId)
+      if (resolved) {
+        return resolved
       }
-      const unrestricted = await unrestrictLink(baseUrl, token, hostLink)
-      return {
-        torrentId,
-        download: unrestricted.download,
-        filename: unrestricted.filename,
-      }
+    } catch {
+      // metadata or file selection still in progress
     }
-    if (['error', 'magnet_error', 'dead', 'virus'].includes(info.status)) {
+    const info = await getTorrentInfo(baseUrl, token, torrentId)
+    if (isFailedStatus(info.status)) {
       return null
     }
     await sleep(pollIntervalMs)
@@ -226,9 +225,9 @@ async function resolveCachedOnly(baseUrl, token, magnet, options = {}) {
   return null
 }
 
-async function startDownload(baseUrl, token, magnet, options = {}) {
+async function resolveStreamableQuick(baseUrl, token, magnet, options = {}) {
   const pollIntervalMs = options.pollIntervalMs || 1000
-  const maxWaitMs = options.maxWaitMs || 120000
+  const maxWaitMs = options.maxWaitMs || 20000
   const startedAt = Date.now()
 
   await getUser(baseUrl, token)
@@ -236,20 +235,27 @@ async function startDownload(baseUrl, token, magnet, options = {}) {
   const torrentId = added.id
 
   while (Date.now() - startedAt < maxWaitMs) {
+    try {
+      const resolved = await resolveStreamUrl(baseUrl, token, torrentId)
+      if (resolved) {
+        return resolved
+      }
+    } catch {
+      // metadata or file selection still in progress
+    }
     const info = await getTorrentInfo(baseUrl, token, torrentId)
     if (isFailedStatus(info.status)) {
-      throw new Error(`Torrent failed: ${info.status}`)
-    }
-    if (info.status === 'waiting_files_selection' && info.files && info.files.length) {
-      await selectFiles(baseUrl, token, torrentId, pickVideoFileIds(info.files))
-    }
-    if (info.status !== 'magnet_conversion' && info.status !== 'waiting_files_selection') {
-      return torrentId
+      return null
     }
     await sleep(pollIntervalMs)
   }
+  return null
+}
 
-  return torrentId
+async function startDownload(baseUrl, token, magnet) {
+  await getUser(baseUrl, token)
+  const added = await addMagnet(baseUrl, token, magnet)
+  return added.id
 }
 
 async function checkDownloadReady(baseUrl, token, torrentId) {
@@ -324,6 +330,7 @@ module.exports = {
   isCached,
   resolveMagnet,
   resolveCachedOnly,
+  resolveStreamableQuick,
   startDownload,
   resolveStreamUrl,
   prepareTorrent,

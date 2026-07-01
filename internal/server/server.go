@@ -6,13 +6,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/debridnest/debridnest/internal/activity"
 	"github.com/debridnest/debridnest/internal/api/admin"
 	"github.com/debridnest/debridnest/internal/api/qbit"
 	"github.com/debridnest/debridnest/internal/api/rd"
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
 	"github.com/debridnest/debridnest/internal/metrics"
 	"github.com/debridnest/debridnest/internal/retention"
+	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/torrent"
 	"github.com/debridnest/debridnest/internal/transcode"
 	"github.com/debridnest/debridnest/internal/web"
@@ -25,12 +28,15 @@ type Options struct {
 	Signer          *links.Signer
 	Metrics         *metrics.Collector
 	RetentionRunner *retention.Runner
+	Auth            *auth.Service
+	Settings        *settings.Store
+	Activity        *activity.Service
 }
 
 func NewRouter(opts Options) (chi.Router, error) {
-	rdHandler := rd.NewHandler(opts.Config, opts.Manager, opts.Signer, opts.Metrics)
+	rdHandler := rd.NewHandler(opts.Config, opts.Manager, opts.Signer, opts.Metrics, opts.Auth)
 	rdRoutes := rdHandler.Routes()
-	adminHandler := admin.NewHandler(opts.Config, opts.Manager, opts.RetentionRunner)
+	adminHandler := admin.NewHandler(opts.Config, opts.Manager, opts.RetentionRunner, opts.Activity, opts.Settings, opts.Auth)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -49,7 +55,7 @@ func NewRouter(opts Options) (chi.Router, error) {
 	}
 	r.Mount("/rest/1.0", rdRoutes)
 	r.Mount("/api/v1", adminHandler.Routes())
-	qbit.Mount(r, opts.Config, opts.Manager)
+	qbit.Mount(r, opts.Config, opts.Manager, opts.Auth)
 	r.Get("/d/{linkID}", func(w http.ResponseWriter, req *http.Request) {
 		req.URL.Path = "/d/" + chi.URLParam(req, "linkID")
 		rdRoutes.ServeHTTP(w, req)

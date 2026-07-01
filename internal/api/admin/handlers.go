@@ -8,10 +8,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/debridnest/debridnest/internal/activity"
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/retention"
-	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
+	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
+	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
 )
 
 const version = "5.0.0"
@@ -22,16 +26,27 @@ type Handler struct {
 	cfg       config.Config
 	manager   *torrentmgr.Manager
 	retention *retention.Runner
+	activity  *activity.Service
+	settings  *settings.Store
+	auth      *auth.Service
 }
 
-func NewHandler(cfg config.Config, manager *torrentmgr.Manager, retentionRunner *retention.Runner) *Handler {
-	return &Handler{cfg: cfg, manager: manager, retention: retentionRunner}
+func NewHandler(cfg config.Config, manager *torrentmgr.Manager, retentionRunner *retention.Runner, activitySvc *activity.Service, settingsStore *settings.Store, authSvc *auth.Service) *Handler {
+	return &Handler{
+		cfg:       cfg,
+		manager:   manager,
+		retention: retentionRunner,
+		activity:  activitySvc,
+		settings:  settingsStore,
+		auth:      authSvc,
+	}
 }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Use(authMiddleware(h.cfg.APIToken))
+	r.Use(h.authMiddleware)
 
+	r.Get("/me", h.me)
 	r.Get("/system", h.system)
 	r.Get("/stats", h.stats)
 	r.Get("/config", h.publicConfig)
@@ -39,10 +54,25 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/torrents/{id}", h.getTorrent)
 	r.Post("/torrents/add", h.addMagnet)
 	r.Post("/torrents/upload", h.uploadTorrent)
+	r.Post("/torrents/batch-delete", h.batchDeleteTorrents)
 	r.Delete("/torrents/{id}", h.deleteTorrent)
 	r.Post("/torrents/{id}/retry", h.retryTorrent)
-	r.Post("/torrents/purge", h.purgeTorrents)
 	r.Post("/maintenance/cleanup", h.maintenanceCleanup)
+	r.Get("/settings", h.getSettings)
+
+	r.Group(func(r chi.Router) {
+		r.Use(adminMiddleware)
+		r.Post("/torrents/purge", h.purgeTorrents)
+		r.Patch("/settings", h.patchSettings)
+		r.Get("/activity", h.listActivity)
+		r.Get("/logs", h.listLogs)
+		r.Route("/users", func(r chi.Router) {
+			r.Get("/", h.listUsers)
+			r.Post("/", h.createUser)
+			r.Delete("/{id}", h.deleteUser)
+			r.Post("/{id}/rotate-token", h.rotateUserToken)
+		})
+	})
 
 	return r
 }
@@ -60,6 +90,7 @@ func (h *Handler) system(w http.ResponseWriter, r *http.Request) {
 		"qbitEnabled":       true,
 		"listen":            h.cfg.Listen,
 		"torrentPort":       h.cfg.TorrentPort,
+		"multiUserEnabled":  h.auth != nil && h.auth.MultiUserEnabled(),
 	})
 }
 
@@ -76,10 +107,10 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
 		"activeCount":    s.ActiveCount,
 		"downloadSpeed":  s.DownloadSpeed,
 		"statusCounts":   s.StatusCounts,
-		"retentionDays":  h.cfg.RetentionDays,
+		"retentionDays":  h.effectiveRetentionDays(),
 		"publicUrl":      h.cfg.PublicURL,
-		"rateLimitMbps":  h.cfg.DownloadRateLimitMB,
-		"diskQuotaGb":    h.cfg.DiskQuotaGB,
+		"rateLimitMbps":  h.effectiveRateLimitMbps(),
+		"diskQuotaGb":    h.effectiveDiskQuotaGB(),
 		"webdavEnabled":  h.cfg.WebDAVEnabled,
 		"metricsEnabled": h.cfg.MetricsEnabled,
 	}
@@ -144,11 +175,11 @@ func (h *Handler) getTorrent(w http.ResponseWriter, r *http.Request) {
 	files := make([]map[string]any, 0, len(rec.Files))
 	for _, f := range rec.Files {
 		files = append(files, map[string]any{
-			"id":               f.ID,
-			"path":             f.Path,
-			"bytes":            f.Bytes,
-			"selected":         f.Selected,
-			"downloadedBytes":  f.DownloadedBytes,
+			"id":              f.ID,
+			"path":            f.Path,
+			"bytes":           f.Bytes,
+			"selected":        f.Selected,
+			"downloadedBytes": f.DownloadedBytes,
 		})
 	}
 
@@ -183,6 +214,10 @@ func (h *Handler) addMagnet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.LogActivity(r.Context(), ActionAddMagnet, map[string]any{
+		"torrentId": rec.ID,
+		"name":      rec.Name,
+	})
 	writeJSON(w, http.StatusCreated, torrentSummary(rec))
 }
 
@@ -214,6 +249,10 @@ func (h *Handler) uploadTorrent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.LogActivity(r.Context(), ActionUploadTorrent, map[string]any{
+		"torrentId": rec.ID,
+		"name":      rec.Name,
+	})
 	writeJSON(w, http.StatusCreated, torrentSummary(rec))
 }
 
@@ -235,6 +274,10 @@ func (h *Handler) purgeTorrents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.LogActivity(r.Context(), ActionPurgeTorrents, map[string]any{
+		"filter":  body.Filter,
+		"deleted": deleted,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
@@ -248,6 +291,10 @@ func (h *Handler) maintenanceCleanup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.LogActivity(r.Context(), ActionMaintenance, map[string]any{
+		"ageRemoved":   result.AgeRemoved,
+		"quotaRemoved": result.QuotaRemoved,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ageRemoved":   result.AgeRemoved,
 		"quotaRemoved": result.QuotaRemoved,
@@ -262,7 +309,38 @@ func (h *Handler) deleteTorrent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	h.LogActivity(r.Context(), ActionDeleteTorrent, map[string]any{"torrentId": id})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) batchDeleteTorrents(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(body.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids required")
+		return
+	}
+
+	deleted, failed := h.manager.DeleteMany(r.Context(), body.IDs)
+	if failed == nil {
+		failed = []string{}
+	}
+	if deleted > 0 {
+		h.LogActivity(r.Context(), ActionBatchDelete, map[string]any{
+			"deleted": deleted,
+			"failed":  len(failed),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": deleted,
+		"failed":  failed,
+	})
 }
 
 func (h *Handler) retryTorrent(w http.ResponseWriter, r *http.Request) {
@@ -271,15 +349,16 @@ func (h *Handler) retryTorrent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.LogActivity(r.Context(), ActionRetryTorrent, map[string]any{"torrentId": id})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) publicConfig(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"publicUrl":      h.cfg.PublicURL,
-		"retentionDays":  h.cfg.RetentionDays,
-		"diskQuotaGb":    h.cfg.DiskQuotaGB,
-		"rateLimitMbps":  h.cfg.DownloadRateLimitMB,
+		"retentionDays":  h.effectiveRetentionDays(),
+		"diskQuotaGb":    h.effectiveDiskQuotaGB(),
+		"rateLimitMbps":  h.effectiveRateLimitMbps(),
 		"webdavEnabled":  h.cfg.WebDAVEnabled,
 		"metricsEnabled": h.cfg.MetricsEnabled,
 	}
@@ -318,19 +397,6 @@ func torrentSummary(rec *storage.TorrentRecord) map[string]any {
 		"progress": rec.Progress,
 		"bytes":    rec.Bytes,
 		"size":     size,
-	}
-}
-
-func authMiddleware(token string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Get("Authorization")
-			if len(auth) < 8 || auth[:7] != "Bearer " || auth[7:] != token {
-				writeError(w, http.StatusUnauthorized, "bad_token")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
 	}
 }
 

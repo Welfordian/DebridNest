@@ -18,17 +18,39 @@ import (
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/diskusage"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 )
 
 type Manager struct {
-	cfg     config.Config
-	db      *storage.DB
-	signer  *links.Signer
-	client  *torrent.Client
-	mu      sync.RWMutex
-	active  map[string]*runtimeTorrent
+	cfg      config.Config
+	db       *storage.DB
+	signer   *links.Signer
+	client   *torrent.Client
+	mu       sync.RWMutex
+	active   map[string]*runtimeTorrent
 	filesDir string
+	hooks    *Hooks
+	settings *settings.Store
+}
+
+type Hooks struct {
+	OnDownloadComplete func(name string)
+}
+
+func (m *Manager) SetHooks(h *Hooks) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hooks = h
+}
+
+func (m *Manager) fireDownloadComplete(name string) {
+	m.mu.RLock()
+	hooks := m.hooks
+	m.mu.RUnlock()
+	if hooks != nil && hooks.OnDownloadComplete != nil {
+		hooks.OnDownloadComplete(name)
+	}
 }
 
 type runtimeTorrent struct {
@@ -37,7 +59,7 @@ type runtimeTorrent struct {
 	done chan struct{}
 }
 
-func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer) (*Manager, error) {
+func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, settingsStore *settings.Store) (*Manager, error) {
 	filesDir := filepath.Join(cfg.DataDir, "files")
 	torrentDir := filepath.Join(cfg.DataDir, "torrent")
 	if err := os.MkdirAll(filesDir, 0o755); err != nil {
@@ -71,6 +93,7 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer) (*Manag
 		client:   client,
 		active:   make(map[string]*runtimeTorrent),
 		filesDir: filesDir,
+		settings: settingsStore,
 	}
 
 	if err := m.resumeIncomplete(context.Background()); err != nil {
@@ -178,12 +201,17 @@ func (m *Manager) SelectFiles(ctx context.Context, torrentID, filesSpec string) 
 }
 
 func (m *Manager) Delete(ctx context.Context, torrentID string) error {
+	var t *torrent.Torrent
 	m.mu.Lock()
 	if rt, ok := m.active[torrentID]; ok {
-		rt.t.Drop()
+		t = rt.t
 		delete(m.active, torrentID)
 	}
 	m.mu.Unlock()
+
+	if t != nil {
+		t.Drop()
+	}
 
 	rec, err := m.db.GetTorrent(ctx, torrentID)
 	if err != nil {
@@ -193,6 +221,20 @@ func (m *Manager) Delete(ctx context.Context, torrentID string) error {
 	dir := filepath.Join(m.filesDir, rec.InfoHash)
 	_ = os.RemoveAll(dir)
 	return m.db.DeleteTorrent(ctx, torrentID)
+}
+
+func (m *Manager) DeleteMany(ctx context.Context, ids []string) (deleted int, failed []string) {
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if err := m.Delete(ctx, id); err != nil {
+			failed = append(failed, id)
+			continue
+		}
+		deleted++
+	}
+	return deleted, failed
 }
 
 func (m *Manager) Get(ctx context.Context, torrentID string) (*storage.TorrentRecord, error) {
@@ -289,7 +331,7 @@ func (m *Manager) InstantAvailability(ctx context.Context, hashes []string) map[
 			continue
 		}
 		rec, err := m.db.GetTorrentByHash(ctx, hash)
-		if err != nil || rec.Status != "downloaded" {
+		if err != nil || (rec.Status != "downloaded" && !m.isStreamable(rec)) {
 			continue
 		}
 		m.ensureHostLinks(ctx, rec)
@@ -458,6 +500,7 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 			lastAt = now
 			rec.Seeders = stats.ActivePeers
 
+			prevStatus := rec.Status
 			if completed >= total && total > 0 {
 				rec.Status = "downloaded"
 				rec.Progress = 100
@@ -473,6 +516,9 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 			_ = m.db.UpdateTorrent(ctx, *rec)
 
 			if rec.Status == "downloaded" {
+				if prevStatus != "downloaded" {
+					m.fireDownloadComplete(rec.Name)
+				}
 				return
 			}
 		}
@@ -544,6 +590,7 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 	if total > 0 {
 		rec.Progress = int(completed * 100 / total)
 	}
+	prevStatus := rec.Status
 	if completed >= total && total > 0 {
 		rec.Status = "downloaded"
 		rec.Progress = 100
@@ -560,6 +607,9 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 	rec.Seeders = stats.ActivePeers
 	_ = m.db.UpdateTorrentFiles(ctx, rec.ID, rec.Files)
 	_ = m.db.UpdateTorrent(ctx, *rec)
+	if prevStatus != "downloaded" && rec.Status == "downloaded" {
+		m.fireDownloadComplete(rec.Name)
+	}
 }
 
 func (m *Manager) ensureHostLinks(ctx context.Context, rec *storage.TorrentRecord) {
@@ -738,6 +788,20 @@ func (m *Manager) FilesDir() string {
 	return m.filesDir
 }
 
+func (m *Manager) GetDownloadRateLimitMbps() float64 {
+	if m.settings != nil {
+		return m.settings.GetDownloadRateLimitMbps()
+	}
+	return m.cfg.DownloadRateLimitMB
+}
+
+func (m *Manager) diskQuotaBytes() int64 {
+	if m.settings != nil {
+		return m.settings.DiskQuotaBytes()
+	}
+	return m.cfg.DiskQuotaBytes()
+}
+
 func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	used, err := diskusage.DirSize(m.filesDir)
 	if err != nil {
@@ -765,7 +829,7 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 
 	return Stats{
 		DiskUsed:      used,
-		DiskQuota:     m.cfg.DiskQuotaBytes(),
+		DiskQuota:     m.diskQuotaBytes(),
 		TorrentCount:  total,
 		ActiveCount:   active,
 		DownloadSpeed: totalSpeed,

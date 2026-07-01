@@ -10,6 +10,8 @@ Self-hosted, open-source personal debrid server with a **Real-Debrid-compatible 
 - Jackett/Prowlarr search in the Stremio addon
 - Progressive streaming before torrents finish downloading
 - Web dashboard at `/dashboard/` for torrent and disk management
+- Multi-user API tokens with admin dashboard (Users, Activity, Logs tabs)
+- Runtime settings (retention, quota, webhooks) editable without restart
 - Disk retention, quotas, and optional download rate limiting
 - Docker Compose with optional Caddy TLS, Cloudflare Tunnel, VPN sidecar, and Stremio addon profiles
 - **Phase 4:** WebDAV library access (Infuse/Kodi/rclone), Prometheus metrics, quality filters + IINA external player in Stremio addon

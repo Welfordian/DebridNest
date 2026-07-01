@@ -68,7 +68,10 @@ async function enrichWithSeasonPacks(jackettUrl, jackettApiKey, meta, episodeTor
     console.warn(
       `[seasonPacks] Episode search returned ${episodeTorrents.length} result(s); adding ${seasonTorrents.length} season pack(s) for S${pad2(meta.season)}`,
     )
-    return mergeEpisodeAndSeasonResults(episodeTorrents, seasonTorrents)
+    return mergeEpisodeAndSeasonResults(episodeTorrents, seasonTorrents.map((t) => ({
+      ...t,
+      seasonPack: true,
+    })))
   } catch (err) {
     console.error('[seasonPacks] Season pack search failed:', err?.message || err)
     return episodeTorrents

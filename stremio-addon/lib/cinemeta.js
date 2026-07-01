@@ -6,9 +6,13 @@ function parseStremioId(id) {
   }
   const parts = id.split(':')
   const imdbId = parts[0]
-  const season = parts.length > 1 ? Number(parts[1]) : null
-  const episode = parts.length > 2 ? Number(parts[2]) : null
-  return { imdbId, season, episode }
+  const season = parts.length > 1 ? Number.parseInt(parts[1], 10) : null
+  const episode = parts.length > 2 ? Number.parseInt(parts[2], 10) : null
+  return {
+    imdbId,
+    season: Number.isFinite(season) ? season : null,
+    episode: Number.isFinite(episode) ? episode : null,
+  }
 }
 
 async function fetchMeta(type, imdbId) {

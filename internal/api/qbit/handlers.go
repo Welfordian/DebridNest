@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/storage"
 	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
@@ -22,15 +23,17 @@ type Handler struct {
 	cfg        config.Config
 	manager    *torrentmgr.Manager
 	sessions   *sessionStore
+	auth       *auth.Service
 	categories sync.Map
 	syncRID    atomic.Uint64
 }
 
-func NewHandler(cfg config.Config, manager *torrentmgr.Manager) *Handler {
+func NewHandler(cfg config.Config, manager *torrentmgr.Manager, authSvc *auth.Service) *Handler {
 	return &Handler{
 		cfg:      cfg,
 		manager:  manager,
 		sessions: newSessionStore(),
+		auth:     authSvc,
 	}
 }
 
@@ -55,18 +58,33 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusBadRequest, "Fails.")
 		return
 	}
-	user, pass := h.cfg.QBitAuth()
-	if r.FormValue("username") != user || r.FormValue("password") != pass {
-		writeText(w, http.StatusOK, "Fails.")
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	if h.authenticateLogin(r.Context(), username, password) {
+		sid, err := h.sessions.create()
+		if err != nil {
+			writeText(w, http.StatusInternalServerError, "Fails.")
+			return
+		}
+		setSessionCookie(w, sid)
+		writeText(w, http.StatusOK, "Ok.")
 		return
 	}
-	sid, err := h.sessions.create()
-	if err != nil {
-		writeText(w, http.StatusInternalServerError, "Fails.")
-		return
+	writeText(w, http.StatusOK, "Fails.")
+}
+
+func (h *Handler) authenticateLogin(ctx context.Context, username, password string) bool {
+	qbitUser, qbitPass := h.cfg.QBitAuth()
+	if username == qbitUser && password == qbitPass {
+		return true
 	}
-	setSessionCookie(w, sid)
-	writeText(w, http.StatusOK, "Ok.")
+	if h.auth != nil {
+		if _, ok := h.auth.ValidateToken(ctx, "Bearer "+password); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) appVersion(w http.ResponseWriter, r *http.Request) {

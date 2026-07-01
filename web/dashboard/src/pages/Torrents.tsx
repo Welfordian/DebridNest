@@ -220,9 +220,13 @@ export default function Torrents() {
 
     setBusyId('bulk');
     try {
-      await deleteTorrents(ids);
+      const result = await deleteTorrents(ids);
       setSelected(new Set());
       await refresh();
+      const failed = result.failed ?? [];
+      if (failed.length > 0) {
+        alert(`Deleted ${result.deleted}; failed to delete ${failed.length} torrent(s).`);
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Delete failed');
     } finally {

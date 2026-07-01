@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
 	"github.com/debridnest/debridnest/internal/metrics"
@@ -24,21 +25,23 @@ type Handler struct {
 	signer      *links.Signer
 	rateLimiter *links.RateLimiter
 	metrics     *metrics.Collector
+	auth        *auth.Service
 }
 
-func NewHandler(cfg config.Config, manager *torrentmgr.Manager, signer *links.Signer, m *metrics.Collector) *Handler {
+func NewHandler(cfg config.Config, manager *torrentmgr.Manager, signer *links.Signer, m *metrics.Collector, authSvc *auth.Service) *Handler {
 	return &Handler{
 		cfg:         cfg,
 		manager:     manager,
 		signer:      signer,
 		rateLimiter: links.NewRateLimiter(cfg.DownloadRateLimitMB),
 		metrics:     m,
+		auth:        authSvc,
 	}
 }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Use(AuthMiddleware(h.cfg.APIToken))
+	r.Use(AuthMiddleware(h.auth))
 	r.Use(corsMiddleware())
 
 	r.Get("/user", h.getUser)

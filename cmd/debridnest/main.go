@@ -9,16 +9,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/debridnest/debridnest/internal/activity"
+	"github.com/debridnest/debridnest/internal/applog"
+	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
 	"github.com/debridnest/debridnest/internal/metrics"
+	"github.com/debridnest/debridnest/internal/notify"
 	"github.com/debridnest/debridnest/internal/retention"
 	"github.com/debridnest/debridnest/internal/server"
+	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
 	"github.com/debridnest/debridnest/internal/torrent"
 )
 
 func main() {
+	log.SetOutput(applog.NewWriter(os.Stderr))
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -30,14 +37,30 @@ func main() {
 	}
 	defer db.Close()
 
+	authSvc, err := auth.New(db, cfg.MultiUserEnabled, cfg.APIToken)
+	if err != nil {
+		log.Fatalf("auth: %v", err)
+	}
+
+	settingsStore, err := settings.NewStore(db, cfg)
+	if err != nil {
+		log.Fatalf("settings: %v", err)
+	}
+
+	activitySvc := activity.New(db)
+
 	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
-	manager, err := torrent.NewManager(cfg, db, signer)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore)
 	if err != nil {
 		log.Fatalf("torrent: %v", err)
 	}
 	defer manager.Close()
 
-	retentionRunner := retention.NewRunner(cfg, manager)
+	notifier := notify.New(notify.StoreReader{Store: settingsStore})
+	manager.SetHooks(&torrent.Hooks{OnDownloadComplete: notifier.NotifyDownloadComplete})
+
+	retentionRunner := retention.NewRunner(cfg, manager, settingsStore)
+	retentionRunner.SetQuotaWarningHook(notifier.NotifyQuotaWarning)
 	retentionRunner.Start()
 
 	var collector *metrics.Collector
@@ -52,6 +75,9 @@ func main() {
 		Signer:          signer,
 		Metrics:         collector,
 		RetentionRunner: retentionRunner,
+		Auth:            authSvc,
+		Settings:        settingsStore,
+		Activity:        activitySvc,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
