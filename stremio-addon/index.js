@@ -227,7 +227,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.1.9',
+  version: '3.1.10',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [

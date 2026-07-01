@@ -83,6 +83,56 @@ function magnetInfoHash(magnet) {
   return match ? match[1].toLowerCase() : null
 }
 
+function isJackettDownloadLink(link) {
+  if (!link || typeof link !== 'string') {
+    return false
+  }
+  try {
+    return new URL(link).pathname.includes('/dl/')
+  } catch {
+    return false
+  }
+}
+
+async function resolveMagnetFromJackettLink(link) {
+  if (!isJackettDownloadLink(link)) {
+    return null
+  }
+  try {
+    const res = await fetch(link, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(JACKETT_TIMEOUT_MS),
+    })
+    const location = res.headers.get('location')
+    if (location && location.toLowerCase().startsWith('magnet:')) {
+      return location
+    }
+  } catch {
+    // Jackett proxy links expire or may be unreachable; skip quietly.
+  }
+  return null
+}
+
+async function enrichTorrentMagnets(items) {
+  const pending = items.filter(
+    (item) => !item.magnet && !item.infoHash && isJackettDownloadLink(item.link),
+  )
+  if (!pending.length) {
+    return items
+  }
+
+  await Promise.all(pending.map(async (item) => {
+    const magnet = await resolveMagnetFromJackettLink(item.link)
+    if (!magnet) {
+      return
+    }
+    item.magnet = magnet
+    item.infoHash = magnetInfoHash(magnet) || item.infoHash
+  }))
+
+  return items
+}
+
 function pad2(n) {
   return String(n).padStart(2, '0')
 }
@@ -171,9 +221,9 @@ async function fetchTorznab(jackettUrl, jackettApiKey, meta, options) {
   }
   const items = Array.isArray(rawItems) ? rawItems : [rawItems]
 
-  return items
-    .map(parseTorznabItem)
-    .filter((item) => item.magnet || item.infoHash)
+  const parsed = items.map(parseTorznabItem)
+  await enrichTorrentMagnets(parsed)
+  return parsed.filter((item) => item.magnet || item.infoHash)
 }
 
 async function searchTorrents(jackettUrl, jackettApiKey, meta) {
