@@ -28,7 +28,6 @@ const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
 const DEFAULT_DEDUPE_STREAMS = process.env.DEDUPE_STREAMS === '1'
 const DEFAULT_PREFER_SEASON_PACKS = process.env.PREFER_SEASON_PACKS === '1'
 const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
-const STREAM_RESOLVE_WAIT_MS = Number(process.env.STREAM_RESOLVE_WAIT_MS || 20000)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
@@ -364,19 +363,6 @@ builder.defineStreamHandler(async (args) => {
       }
     }
 
-    if (!resolved && streams.length === 0) {
-      try {
-        resolved = await debridnest.resolveStreamableQuick(
-          config.apiUrl,
-          config.apiToken,
-          entry.torrent.magnet,
-          { maxWaitMs: STREAM_RESOLVE_WAIT_MS },
-        )
-      } catch {
-        resolved = null
-      }
-    }
-
     if (resolved) {
       streams.push(buildStreamObject(entry, {
         directUrl: resolved.download,
@@ -389,6 +375,8 @@ builder.defineStreamHandler(async (args) => {
       continue
     }
 
+    // Placeholder streams are listed for fallback choice only; the magnet is
+    // added when the user plays (/play, /open, /ready) — not while listing.
     try {
       const progressToken = progress.createJob({
         magnet: entry.torrent.magnet,
@@ -396,10 +384,6 @@ builder.defineStreamHandler(async (args) => {
         apiToken: config.apiToken,
         label: entry.torrent.title,
       })
-      const job = progress.getJob(progressToken)
-      if (job) {
-        progressHandler.ensureTorrentStarted(job).catch(() => {})
-      }
       streams.push(buildStreamObject(entry, {
         progressToken,
         placeholder: true,
