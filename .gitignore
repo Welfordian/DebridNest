@@ -1,0 +1,36 @@
+# Binaries
+/debridnest
+*.exe
+
+# Data
+/data/
+*.db
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Go
+/vendor/
+
+# Node
+node_modules/
+stremio-addon/node_modules/
+web/dashboard/node_modules/
+
+# Recovery artifacts
+*.recovered
+*.recovered2
+*.replay
+
+# OS
+.DS_Store
+
+# Certs (generate locally)
+deploy/certs/*.pem
+!deploy/certs/.gitkeep
+
+# IDE
+.idea/
+.vscode/

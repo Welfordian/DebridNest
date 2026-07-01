@@ -1,0 +1,19 @@
+{
+  "name": "debridnest-stremio-addon",
+  "version": "3.0.0",
+  "description": "Stremio addon for DebridNest with Jackett/Prowlarr search",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.2.5",
+    "stremio-addon-sdk": "^1.6.10"
+  }
+}

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: web/dashboard
+      - run: npm run build
+        working-directory: web/dashboard
+      - run: go test ./...
+      - run: go build -o /dev/null ./cmd/debridnest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build debridnest
+
+  stremio-addon:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stremio-addon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - run: node --check index.js
+      - run: node --check lib/debridnest.js
+      - run: node --check lib/jackett.js
+      - run: node --check lib/cinemeta.js
+      - run: node --check lib/rank.js
+      - run: node --check lib/scrapers.js
+      - run: node --check lib/progress.js
+      - run: node --check lib/progressHandler.js

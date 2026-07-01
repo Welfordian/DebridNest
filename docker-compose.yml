@@ -1,0 +1,118 @@
+services:
+  debridnest:
+    build: .
+    ports:
+      - "8080:8080"
+      - "42069:42069"
+      - "42069:42069/udp"
+    env_file:
+      - .env
+    environment:
+      DEBRIDNEST_DATA_DIR: /data
+      DEBRIDNEST_LISTEN: ":8080"
+      DEBRIDNEST_MIN_STREAM_MB: "8"
+      DEBRIDNEST_STREAM_READAHEAD_MB: "32"
+      DEBRIDNEST_SEEK_READAHEAD_MB: "64"
+      DEBRIDNEST_SEEK_PREROLL_MB: "8"
+    volumes:
+      - debridnest-data:/data
+    restart: unless-stopped
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    depends_on:
+      - debridnest
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DEBRIDNEST_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+  nginx:
+    profiles: ["tls-nginx"]
+    image: nginx:alpine
+    depends_on:
+      - debridnest
+    ports:
+      - "8443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - debridnest-data:/data:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    depends_on:
+      - debridnest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+
+  jackett:
+    profiles: ["stremio"]
+    image: lscr.io/linuxserver/jackett:latest
+    ports:
+      - "9117:9117"
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-UTC}
+    volumes:
+      - jackett-config:/config
+    restart: unless-stopped
+
+  jackett-setup:
+    profiles: ["stremio"]
+    image: node:20-alpine
+    depends_on:
+      - jackett
+    environment:
+      JACKETT_URL: http://jackett:9117
+      JACKETT_CONFIG_FILE: /jackett-config/Jackett/ServerConfig.json
+      JACKETT_API_KEY: ${JACKETT_API_KEY:-}
+      JACKETT_INDEXERS: ${JACKETT_INDEXERS:-limetorrents,therarbg,eztv,knaben,magnetz}
+    volumes:
+      - jackett-config:/jackett-config:ro
+      - ./scripts/setup-jackett-indexers.js:/setup/setup-jackett-indexers.js:ro
+    command: ["node", "/setup/setup-jackett-indexers.js"]
+    restart: on-failure:3
+
+  stremio-addon:
+    profiles: ["stremio"]
+    build: ./stremio-addon
+    ports:
+      - "7001:7001"
+    environment:
+      DEBRIDNEST_API_URL: http://debridnest:8080/rest/1.0
+      DEBRIDNEST_API_TOKEN: ${DEBRIDNEST_API_TOKEN}
+      JACKETT_URL: ${JACKETT_URL:-http://jackett:9117}
+      JACKETT_API_KEY: ${JACKETT_API_KEY:-}
+      JACKETT_CONFIG_FILE: /jackett-config/Jackett/ServerConfig.json
+      PORT: "7001"
+      MAX_RESULTS: "20"
+      PROGRESS_MAX_WAIT_MS: "120000"
+    volumes:
+      - jackett-config:/jackett-config:ro
+    depends_on:
+      debridnest:
+        condition: service_started
+      jackett:
+        condition: service_started
+      jackett-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  debridnest-data:
+  jackett-config:
+  caddy-data:
+  caddy-config:
