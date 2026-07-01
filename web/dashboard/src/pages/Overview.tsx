@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
-import { fetchStats } from '../api';
+import { fetchStats, joinUrl } from '../api';
+import type { Tab } from '../App';
 import { usePolling } from '../hooks/usePolling';
 import {
   formatBytes,
@@ -22,7 +23,42 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export default function Overview() {
+function QuickLink({
+  label,
+  description,
+  onClick,
+  href,
+  external,
+}: {
+  label: string;
+  description: string;
+  onClick?: () => void;
+  href?: string;
+  external?: boolean;
+}) {
+  if (href) {
+    return (
+      <a
+        className="quick-link"
+        href={href}
+        target={external ? '_blank' : undefined}
+        rel={external ? 'noreferrer' : undefined}
+      >
+        <span className="quick-link-label">{label}</span>
+        <span className="muted quick-link-desc">{description}</span>
+      </a>
+    );
+  }
+
+  return (
+    <button type="button" className="quick-link" onClick={onClick}>
+      <span className="quick-link-label">{label}</span>
+      <span className="muted quick-link-desc">{description}</span>
+    </button>
+  );
+}
+
+export default function Overview({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   const loader = useCallback(() => fetchStats(), []);
   const { data: stats, error, loading, updatedAt, refresh } = usePolling(loader);
 
@@ -53,6 +89,8 @@ export default function Overview() {
     'magnet_conversion',
   ]);
   const failed = statusTotal(stats.statusCounts, ['error', 'dead']);
+
+  const base = stats.publicUrl.replace(/\/+$/, '');
 
   return (
     <div className="overview">
@@ -87,6 +125,9 @@ export default function Overview() {
             <span className="pill pill-live">Live</span>
           </div>
           <p className="hero-value">{formatSpeed(stats.downloadSpeed)}</p>
+          <div className="disk-bar disk-bar-spacer" aria-hidden="true">
+            <div className="disk-bar-fill" style={{ width: '0%' }} />
+          </div>
           <p className="stat-detail muted">
             {stats.activeCount} active · {stats.torrentCount} total torrents
           </p>
@@ -114,6 +155,47 @@ export default function Overview() {
           <p className="stat-value">{failed}</p>
           <p className="stat-detail muted">Error or dead</p>
         </article>
+      </section>
+
+      <section className="card config-card">
+        <div className="card-heading">
+          <h2>Quick links</h2>
+        </div>
+        <div className="quick-links">
+          <QuickLink
+            label="Library"
+            description="Completed torrents, WebDAV paths, stream links"
+            onClick={() => onNavigate('library')}
+          />
+          <QuickLink
+            label="Settings"
+            description="Service URLs, maintenance, purge"
+            onClick={() => onNavigate('settings')}
+          />
+          {stats.webdavEnabled && base && (
+            <QuickLink
+              label="WebDAV"
+              description="Browse completed files"
+              href={joinUrl(base, '/webdav/')}
+              external
+            />
+          )}
+          {stats.metricsEnabled && base && (
+            <QuickLink
+              label="Metrics"
+              description="Prometheus /metrics endpoint"
+              href={joinUrl(base, '/metrics')}
+              external
+            />
+          )}
+          {base && (
+            <QuickLink
+              label="Dashboard"
+              description="This control panel"
+              href={joinUrl(base, '/dashboard/')}
+            />
+          )}
+        </div>
       </section>
 
       <section className="card config-card">

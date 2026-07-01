@@ -1,17 +1,25 @@
-import { useCallback, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  addMagnet,
   deleteTorrent,
+  deleteTorrents,
+  fetchTorrentDetail,
   fetchTorrents,
   retryTorrent,
+  uploadTorrent,
   type Torrent,
+  type TorrentDetail,
 } from '../api';
+import Modal from '../components/Modal';
 import { usePolling } from '../hooks/usePolling';
 import {
+  basename,
   formatBytes,
   formatProgress,
   formatRelativeTime,
   formatSpeed,
 } from '../lib/format';
+import CopyButton from '../components/CopyButton';
 
 type Filter = 'all' | 'active' | 'completed' | 'failed';
 
@@ -51,9 +59,93 @@ function ProgressCell({ progress, status }: { progress: number; status: string }
   );
 }
 
+function TorrentDetailModal({
+  torrent,
+  onClose,
+}: {
+  torrent: Torrent;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<TorrentDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchTorrentDetail(torrent.id)
+      .then((d) => {
+        if (!cancelled) setDetail(d);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Load failed');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [torrent.id]);
+
+  const size = torrent.size > 0 ? torrent.size : torrent.bytes;
+
+  return (
+    <Modal title={torrent.name} onClose={onClose}>
+      <div className="detail-meta">
+        <span className={`status status-${torrent.status}`}>{torrent.status.replace(/_/g, ' ')}</span>
+        <span className="muted">{formatBytes(size)} · {torrent.hash}</span>
+      </div>
+
+      {loading && <p className="muted">Loading detail…</p>}
+      {error && <p className="error">{error}</p>}
+
+      {detail && (
+        <>
+          {detail.files.length > 0 && (
+            <div className="detail-section">
+              <h3>Files</h3>
+              <ul className="detail-file-list">
+                {detail.files.map((file) => (
+                  <li key={String(file.id)}>
+                    <span>{basename(file.path)}</span>
+                    <span className="muted">{formatBytes(file.bytes)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {detail.links.length > 0 && (
+            <div className="detail-section">
+              <h3>Links</h3>
+              <ul className="detail-link-list">
+                {detail.links.map((link) => (
+                  <li key={link}>
+                    <code className="url-value">{link}</code>
+                    <CopyButton value={link} label="Copy" />
+                  </li>
+                ))}
+              </ul>
+              <p className="muted hint-text">Signed download URLs expire — prefer host links for streaming.</p>
+            </div>
+          )}
+        </>
+      )}
+    </Modal>
+  );
+}
+
 export default function Torrents() {
   const [filter, setFilter] = useState<Filter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [magnet, setMagnet] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [detailTorrent, setDetailTorrent] = useState<Torrent | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loader = useCallback(() => fetchTorrents(), []);
   const { data: torrents, error, loading, updatedAt, refresh } = usePolling(loader);
@@ -75,11 +167,61 @@ export default function Torrents() {
     };
   }, [torrents]);
 
+  const allFilteredSelected =
+    filtered.length > 0 && filtered.every((t) => selected.has(t.id));
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (allFilteredSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        filtered.forEach((t) => next.delete(t.id));
+        return next;
+      });
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        filtered.forEach((t) => next.add(t.id));
+        return next;
+      });
+    }
+  }
+
   async function handleDelete(id: string) {
     if (!confirm('Delete this torrent and its files?')) return;
     setBusyId(id);
     try {
       await deleteTorrent(id);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      await refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDeleteSelected() {
+    const ids = [...selected].filter((id) => filtered.some((t) => t.id === id));
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected torrent(s) and their files?`)) return;
+
+    setBusyId('bulk');
+    try {
+      await deleteTorrents(ids);
+      setSelected(new Set());
       await refresh();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Delete failed');
@@ -100,12 +242,79 @@ export default function Torrents() {
     }
   }
 
+  async function handleAddMagnet(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = magnet.trim();
+    if (!trimmed) return;
+
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      await addMagnet(trimmed);
+      setMagnet('');
+      await refresh();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Add magnet failed');
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  async function handleUpload(file: File) {
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      await uploadTorrent(file);
+      await refresh();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setAddBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
   if (loading && !torrents) {
     return <p className="muted page-loading">Loading torrents…</p>;
   }
 
   return (
     <div className="torrents">
+      <form className="add-torrent-bar card" onSubmit={handleAddMagnet}>
+        <label htmlFor="magnet-input" className="config-label">
+          Add magnet
+        </label>
+        <div className="add-torrent-row">
+          <textarea
+            id="magnet-input"
+            className="magnet-input"
+            value={magnet}
+            onChange={(e) => setMagnet(e.target.value)}
+            placeholder="magnet:?xt=urn:btih:…"
+            rows={2}
+          />
+          <div className="add-torrent-actions">
+            <button type="submit" className="btn btn-primary" disabled={addBusy || !magnet.trim()}>
+              {addBusy ? 'Adding…' : 'Add magnet'}
+            </button>
+            <label className="btn btn-secondary upload-label">
+              Upload .torrent
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".torrent,application/x-bittorrent"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleUpload(file);
+                }}
+              />
+            </label>
+          </div>
+        </div>
+        {addError && <p className="error">{addError}</p>}
+      </form>
+
       <div className="page-toolbar">
         <div className="filter-tabs" role="tablist" aria-label="Torrent filters">
           {([
@@ -129,7 +338,19 @@ export default function Torrents() {
         </div>
 
         <div className="toolbar-actions">
-          {updatedAt && <span className="muted toolbar-meta">Updated {formatRelativeTime(updatedAt)}</span>}
+          {selected.size > 0 && (
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              disabled={busyId === 'bulk'}
+              onClick={handleDeleteSelected}
+            >
+              Delete selected ({selected.size})
+            </button>
+          )}
+          {updatedAt && (
+            <span className="muted toolbar-meta">Updated {formatRelativeTime(updatedAt)}</span>
+          )}
           <button type="button" className="btn btn-secondary btn-sm" onClick={() => refresh()}>
             Refresh
           </button>
@@ -141,13 +362,21 @@ export default function Torrents() {
       {filtered.length === 0 ? (
         <div className="empty-state card">
           <p>{torrents?.length ? 'No torrents match this filter.' : 'No torrents yet.'}</p>
-          <p className="muted">Streams added from Stremio will appear here.</p>
+          <p className="muted">Add a magnet above or streams from Stremio will appear here.</p>
         </div>
       ) : (
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
+                <th className="checkbox-col">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all"
+                    checked={allFilteredSelected}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <th>Name</th>
                 <th>Status</th>
                 <th>Progress</th>
@@ -163,7 +392,19 @@ export default function Torrents() {
                 const showSpeed = t.speed > 0 && ACTIVE_STATUSES.has(t.status);
 
                 return (
-                  <tr key={t.id}>
+                  <tr
+                    key={t.id}
+                    className="clickable-row"
+                    onClick={() => setDetailTorrent(t)}
+                  >
+                    <td className="checkbox-col" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${t.name}`}
+                        checked={selected.has(t.id)}
+                        onChange={() => toggleSelect(t.id)}
+                      />
+                    </td>
                     <td className="name-cell" title={t.name}>
                       <span className="name-primary">{t.name}</span>
                       <span className="name-meta muted">{t.hash.slice(0, 12)}…</span>
@@ -177,7 +418,7 @@ export default function Torrents() {
                     <td>{formatBytes(size)}</td>
                     <td>{showSpeed ? formatSpeed(t.speed) : '—'}</td>
                     <td className="muted">{formatRelativeTime(t.added)}</td>
-                    <td className="actions-cell">
+                    <td className="actions-cell" onClick={(e) => e.stopPropagation()}>
                       <button
                         type="button"
                         className="btn btn-danger btn-sm"
@@ -203,6 +444,10 @@ export default function Torrents() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {detailTorrent && (
+        <TorrentDetailModal torrent={detailTorrent} onClose={() => setDetailTorrent(null)} />
       )}
     </div>
   );

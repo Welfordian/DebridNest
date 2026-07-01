@@ -18,6 +18,26 @@ services:
       - debridnest-data:/data
     restart: unless-stopped
 
+  debridnest-transcode:
+    profiles: ["transcode"]
+    build:
+      context: .
+      args:
+        WITH_FFMPEG: "1"
+    ports:
+      - "8080:8080"
+      - "42069:42069"
+      - "42069:42069/udp"
+    env_file:
+      - .env
+    environment:
+      DEBRIDNEST_DATA_DIR: /data
+      DEBRIDNEST_LISTEN: ":8080"
+      DEBRIDNEST_TRANSCODE: "1"
+    volumes:
+      - debridnest-data:/data
+    restart: unless-stopped
+
   caddy:
     profiles: ["tls"]
     image: caddy:2-alpine
@@ -86,6 +106,24 @@ services:
     command: ["node", "/setup/setup-jackett-indexers.js"]
     restart: on-failure:3
 
+  rd-proxy:
+    profiles: ["torrentio"]
+    image: nginx:alpine
+    depends_on:
+      - debridnest
+    ports:
+      - "8888:8888"
+      # Uncomment for HTTPS hosts-file override (requires deploy/certs + rd-proxy-ssl.conf):
+      # - "443:443"
+    environment:
+      DEBRIDNEST_API_TOKEN: ${DEBRIDNEST_API_TOKEN}
+    volumes:
+      - ./deploy/rd-proxy.conf:/etc/nginx/templates/default.conf.template:ro
+      # Optional TLS for api.real-debrid.com hosts override:
+      # - ./deploy/rd-proxy-ssl.conf:/etc/nginx/templates/ssl.conf.template:ro
+      # - ./deploy/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
   stremio-addon:
     profiles: ["stremio"]
     build: ./stremio-addon
@@ -102,6 +140,8 @@ services:
       PREFER_SDR: ${PREFER_SDR:-0}
       MAX_RESOLUTION: ${MAX_RESOLUTION:-0}
       MAX_FILE_SIZE_GB: ${MAX_FILE_SIZE_GB:-0}
+      DEDUPE_STREAMS: ${DEDUPE_STREAMS:-1}
+      PREFER_SEASON_PACKS: ${PREFER_SEASON_PACKS:-1}
       PROGRESS_MAX_WAIT_MS: "120000"
     volumes:
       - jackett-config:/jackett-config:ro

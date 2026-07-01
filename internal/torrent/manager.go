@@ -50,8 +50,13 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer) (*Manag
 	clientCfg := torrent.NewDefaultClientConfig()
 	clientCfg.DataDir = torrentDir
 	clientCfg.SetListenAddr(":" + cfg.TorrentPort)
-	clientCfg.Seed = false
-	clientCfg.NoUpload = true
+	if cfg.SeedAfterComplete {
+		clientCfg.Seed = true
+		clientCfg.NoUpload = false
+	} else {
+		clientCfg.Seed = false
+		clientCfg.NoUpload = true
+	}
 	clientCfg.DefaultStorage = tstorage.NewFileByInfoHash(filesDir)
 
 	client, err := torrent.NewClient(clientCfg)
@@ -649,7 +654,46 @@ func (m *Manager) backgroundLoop() {
 				go m.resumeOne(rec)
 			}
 		}
+		if m.cfg.SeedAfterComplete {
+			m.enforceSeedingLimits(ctx)
+		}
 	}
+}
+
+func (m *Manager) enforceSeedingLimits(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id, rt := range m.active {
+		rec, err := m.db.GetTorrent(ctx, id)
+		if err != nil || rec.Status != "downloaded" {
+			continue
+		}
+		if !m.shouldStopSeeding(rt.t, rec) {
+			continue
+		}
+		rt.t.Drop()
+		delete(m.active, id)
+	}
+}
+
+func (m *Manager) shouldStopSeeding(t *torrent.Torrent, rec *storage.TorrentRecord) bool {
+	if m.cfg.SeedRatio > 0 {
+		stats := t.Stats()
+		downloaded := stats.BytesReadUsefulData.Int64()
+		if downloaded > 0 {
+			ratio := float64(stats.BytesWrittenData.Int64()) / float64(downloaded)
+			if ratio >= m.cfg.SeedRatio {
+				return true
+			}
+		}
+	} else if m.cfg.SeedMinutes > 0 && rec.EndedAt != nil {
+		deadline := rec.EndedAt.Add(time.Duration(m.cfg.SeedMinutes) * time.Minute)
+		if !time.Now().Before(deadline) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) setError(ctx context.Context, id, status string) {
@@ -767,6 +811,41 @@ func (m *Manager) EvictOldestCompleted(ctx context.Context, needBytes int64) (in
 		}
 	}
 	return removed, nil
+}
+
+func (m *Manager) PurgeByStatus(ctx context.Context, filter string) (int, error) {
+	var statuses []string
+	switch filter {
+	case "completed":
+		statuses = []string{"downloaded"}
+	case "failed":
+		statuses = []string{"error", "dead", "magnet_error"}
+	case "active":
+		statuses = []string{"downloading", "queued", "waiting_files_selection", "magnet_conversion"}
+	default:
+		return 0, fmt.Errorf("unknown filter: %s", filter)
+	}
+
+	statusSet := make(map[string]bool, len(statuses))
+	for _, s := range statuses {
+		statusSet[s] = true
+	}
+
+	items, err := m.List(ctx, 10000)
+	if err != nil {
+		return 0, err
+	}
+
+	var deleted int
+	for i := range items {
+		if !statusSet[items[i].Status] {
+			continue
+		}
+		if err := m.Delete(ctx, items[i].ID); err == nil {
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func (m *Manager) Retry(ctx context.Context, torrentID string) error {

@@ -37,7 +37,8 @@ func main() {
 	}
 	defer manager.Close()
 
-	retention.NewRunner(cfg, manager).Start()
+	retentionRunner := retention.NewRunner(cfg, manager)
+	retentionRunner.Start()
 
 	var collector *metrics.Collector
 	if cfg.MetricsEnabled {
@@ -46,10 +47,11 @@ func main() {
 	}
 
 	r, err := server.NewRouter(server.Options{
-		Config:  cfg,
-		Manager: manager,
-		Signer:  signer,
-		Metrics: collector,
+		Config:          cfg,
+		Manager:         manager,
+		Signer:          signer,
+		Metrics:         collector,
+		RetentionRunner: retentionRunner,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)

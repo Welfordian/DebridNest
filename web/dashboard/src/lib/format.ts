@@ -37,3 +37,18 @@ export function formatQuotaLabel(used: number, quotaBytes: number, quotaGb: numb
   }
   return `${formatBytes(used)} used · no quota configured`;
 }
+
+export function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+export function basename(path: string): string {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1] || path;
+}

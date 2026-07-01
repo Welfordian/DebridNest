@@ -24,6 +24,8 @@ const DEFAULT_MAX_RESULTS = Number(process.env.MAX_RESULTS || 5)
 const DEFAULT_PREFER_SDR = process.env.PREFER_SDR === '1'
 const DEFAULT_MAX_RESOLUTION = process.env.MAX_RESOLUTION || '0'
 const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
+const DEFAULT_DEDUPE_STREAMS = process.env.DEDUPE_STREAMS === '1'
+const DEFAULT_PREFER_SEASON_PACKS = process.env.PREFER_SEASON_PACKS === '1'
 const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
@@ -60,6 +62,8 @@ function getConfig(userConfig = {}) {
     preferSdr: qualityConfig.preferSdr,
     maxResolution: String(qualityConfig.maxResolution || '0'),
     maxFileSizeGb: String(qualityConfig.maxFileSizeGb || '0'),
+    dedupeStreams: DEFAULT_DEDUPE_STREAMS,
+    preferSeasonPacks: DEFAULT_PREFER_SEASON_PACKS,
   }
 }
 
@@ -137,7 +141,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.0.0',
+  version: '3.1.0',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [

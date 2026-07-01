@@ -23,6 +23,7 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - run: go build -o /dev/null ./cmd/debridnest
+      - run: go build -o /dev/null ./cmd/rd-proxy
 
   integration:
     runs-on: ubuntu-latest
@@ -43,6 +44,8 @@ jobs:
       - run: docker compose --profile tunnel config --quiet
       - run: docker compose --profile stremio config --quiet
       - run: docker compose --profile vpn config --quiet
+      - run: docker compose --profile torrentio config --quiet
+      - run: docker compose --profile transcode config --quiet
 
   stremio-addon:
     runs-on: ubuntu-latest
@@ -65,3 +68,5 @@ jobs:
       - run: node --check lib/progressHandler.js
       - run: node --check lib/quality.js
       - run: node --check lib/externalPlayer.js
+      - run: node --check lib/dedupe.js
+      - run: node --check lib/seasonPacks.js

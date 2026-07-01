@@ -1,5 +1,6 @@
 # Binaries
 /debridnest
+/rd-proxy
 *.exe
 
 # Data

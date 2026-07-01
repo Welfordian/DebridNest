@@ -29,6 +29,12 @@ type Config struct {
 	WebDAVUser          string
 	WebDAVPassword      string
 	WebDAVEnabled       bool
+	QBitUser            string
+	QBitPassword        string
+	SeedAfterComplete   bool
+	SeedRatio           float64
+	SeedMinutes         int
+	TranscodeEnabled    bool
 }
 
 func (c Config) MinStreamBytes() int64 {
@@ -86,6 +92,10 @@ func Load() (Config, error) {
 	seekPreRollMB, _ := strconv.ParseInt(getenv("DEBRIDNEST_SEEK_PREROLL_MB", "8"), 10, 64)
 	metricsEnabled := os.Getenv("DEBRIDNEST_METRICS") == "1"
 	webdavEnabled := getenv("DEBRIDNEST_WEBDAV_ENABLED", "1") != "0"
+	seedAfterComplete := os.Getenv("DEBRIDNEST_SEED_AFTER_COMPLETE") == "1"
+	seedRatio, _ := strconv.ParseFloat(getenv("DEBRIDNEST_SEED_RATIO", "0"), 64)
+	seedMinutes, _ := strconv.Atoi(getenv("DEBRIDNEST_SEED_MINUTES", "0"))
+	transcodeEnabled := os.Getenv("DEBRIDNEST_TRANSCODE") == "1"
 
 	return Config{
 		APIToken:            token,
@@ -109,7 +119,20 @@ func Load() (Config, error) {
 		WebDAVUser:          os.Getenv("DEBRIDNEST_WEBDAV_USER"),
 		WebDAVPassword:      os.Getenv("DEBRIDNEST_WEBDAV_PASSWORD"),
 		WebDAVEnabled:       webdavEnabled,
+		QBitUser:            getenv("DEBRIDNEST_QBIT_USER", "debridnest"),
+		QBitPassword:        qbitPassword(token),
+		SeedAfterComplete:   seedAfterComplete,
+		SeedRatio:           seedRatio,
+		SeedMinutes:         seedMinutes,
+		TranscodeEnabled:    transcodeEnabled,
 	}, nil
+}
+
+func qbitPassword(token string) string {
+	if v := os.Getenv("DEBRIDNEST_QBIT_PASSWORD"); v != "" {
+		return v
+	}
+	return token
 }
 
 // WebDAVAuth returns Basic auth credentials. Disabled when WebDAVEnabled is false.
@@ -123,6 +146,12 @@ func (c Config) WebDAVAuth() (user, password string, ok bool) {
 		return c.WebDAVUser, c.WebDAVPassword, true
 	}
 	return "debridnest", c.APIToken, true
+}
+
+// QBitAuth returns qBittorrent Web UI credentials for Sonarr/Radarr.
+// Default user is "debridnest" with DEBRIDNEST_API_TOKEN as password.
+func (c Config) QBitAuth() (user, password string) {
+	return c.QBitUser, c.QBitPassword
 }
 
 func (c Config) DiskQuotaBytes() int64 {

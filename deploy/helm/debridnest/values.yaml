@@ -1,0 +1,37 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/debridnest/debridnest
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+  torrentPort: 42069
+
+persistence:
+  enabled: true
+  size: 100Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+env:
+  DEBRIDNEST_PUBLIC_URL: http://localhost:8080
+  DEBRIDNEST_DATA_DIR: /data
+  DEBRIDNEST_LISTEN: ":8080"
+  DEBRIDNEST_TORRENT_PORT: "42069"
+  DEBRIDNEST_RETENTION_DAYS: "30"
+  DEBRIDNEST_DISK_QUOTA_GB: "0"
+  DEBRIDNEST_METRICS: "0"
+  DEBRIDNEST_WEBDAV_ENABLED: "0"
+
+# Required — set via --set secret.apiToken=... or external secret manager
+secret:
+  apiToken: ""
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

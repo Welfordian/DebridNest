@@ -1,9 +1,11 @@
 import { FormEvent, useState } from 'react';
 import { clearToken, getToken, setToken } from './api';
+import Library from './pages/Library';
 import Overview from './pages/Overview';
+import Settings from './pages/Settings';
 import Torrents from './pages/Torrents';
 
-type Tab = 'overview' | 'torrents';
+export type Tab = 'overview' | 'torrents' | 'library' | 'settings';
 
 function LoginForm({ onLogin }: { onLogin: () => void }) {
   const [token, setTokenInput] = useState('');
@@ -109,6 +111,20 @@ export default function App() {
           >
             Torrents
           </button>
+          <button
+            type="button"
+            className={tab === 'library' ? 'tab active' : 'tab'}
+            onClick={() => setTab('library')}
+          >
+            Library
+          </button>
+          <button
+            type="button"
+            className={tab === 'settings' ? 'tab active' : 'tab'}
+            onClick={() => setTab('settings')}
+          >
+            Settings
+          </button>
         </nav>
 
         <button type="button" className="btn btn-ghost" onClick={handleSignOut}>
@@ -117,7 +133,10 @@ export default function App() {
       </header>
 
       <main className="main">
-        {tab === 'overview' ? <Overview /> : <Torrents />}
+        {tab === 'overview' && <Overview onNavigate={setTab} />}
+        {tab === 'torrents' && <Torrents />}
+        {tab === 'library' && <Library />}
+        {tab === 'settings' && <Settings />}
       </main>
     </div>
   );

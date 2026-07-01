@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-debridnest
+  labels:
+    app.kubernetes.io/name: debridnest
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: debridnest
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    - name: torrent-tcp
+      port: {{ .Values.service.torrentPort }}
+      targetPort: torrent-tcp
+      protocol: TCP
+    - name: torrent-udp
+      port: {{ .Values.service.torrentPort }}
+      targetPort: torrent-udp
+      protocol: UDP

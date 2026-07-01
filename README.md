@@ -13,6 +13,33 @@ Self-hosted, open-source personal debrid server with a **Real-Debrid-compatible 
 - Disk retention, quotas, and optional download rate limiting
 - Docker Compose with optional Caddy TLS, Cloudflare Tunnel, VPN sidecar, and Stremio addon profiles
 - **Phase 4:** WebDAV library access (Infuse/Kodi/rclone), Prometheus metrics, quality filters + IINA external player in Stremio addon
+- **Phase 5:** Sonarr/Radarr qBit API, Torrentio RD proxy, HLS transcode, seeding controls, one-line installer, release workflow
+
+## One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Welfordian/DebridNest/main/scripts/install.sh | bash
+```
+
+Or clone and run locally:
+
+```bash
+bash scripts/install.sh
+```
+
+Environment presets for common setups live in [`deploy/env/`](deploy/env/) (`home`, `vps`, `minimal`).
+
+## Phase 5 features
+
+| Feature | Docs |
+|---------|------|
+| qBittorrent Web API for Sonarr/Radarr | [docs/arr-setup.md](docs/arr-setup.md) |
+| Plex/Jellyfin library via WebDAV | [docs/media-server.md](docs/media-server.md) |
+| Torrentio + Real-Debrid API proxy | [docs/torrentio-setup.md](docs/torrentio-setup.md) |
+| Optional HLS transcode (ffmpeg) | [docs/transcode.md](docs/transcode.md) |
+| Seeding controls (`DEBRIDNEST_SEED_*`) | [docs/operations.md](docs/operations.md) |
+| Env presets + Helm chart | [deploy/env/](deploy/env/), [deploy/helm/debridnest/](deploy/helm/debridnest/) |
+| Release notes | [CHANGELOG.md](CHANGELOG.md) |
 
 ## Phase 4 features
 

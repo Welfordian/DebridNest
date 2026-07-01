@@ -19,7 +19,9 @@ RUN CGO_ENABLED=0 go build -o /debridnest ./cmd/debridnest
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates
+ARG WITH_FFMPEG=0
+RUN apk add --no-cache ca-certificates \
+    && if [ "$WITH_FFMPEG" = "1" ]; then apk add --no-cache ffmpeg; fi
 
 WORKDIR /app
 COPY --from=builder /debridnest /usr/local/bin/debridnest
