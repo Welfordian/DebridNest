@@ -11,11 +11,13 @@ async function ensureTorrentStarted(job) {
   if (job.torrentId) {
     return job.torrentId
   }
-  if (!job.magnet) {
-    throw new Error('missing magnet link')
+  if (!job.magnet && !job.torrentLink) {
+    throw new Error('missing magnet link or Jackett download link')
   }
   if (!job.starting) {
-    job.starting = debridnest.startDownload(job.apiUrl, job.apiToken, job.magnet)
+    job.starting = debridnest.startDownload(job.apiUrl, job.apiToken, job.magnet, {
+      torrentLink: job.torrentLink,
+    })
       .then(async (torrentId) => {
         job.torrentId = torrentId
         delete job.starting

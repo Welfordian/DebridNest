@@ -56,6 +56,54 @@ async function addMagnet(baseUrl, token, magnet) {
   return apiRequest(baseUrl, token, 'POST', '/torrents/addMagnet', { magnet })
 }
 
+async function addTorrentFile(baseUrl, token, data, filename = 'file.torrent') {
+  const url = `${normalizeBaseUrl(baseUrl)}/torrents/addTorrent`
+  const form = new FormData()
+  form.append('torrent', new Blob([data]), filename)
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  })
+  const text = await res.text()
+  let parsed = null
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = text
+    }
+  }
+  if (!res.ok) {
+    const message = parsed && parsed.error ? parsed.error : `DebridNest API ${res.status}`
+    const err = new Error(message)
+    err.status = res.status
+    err.data = parsed
+    throw err
+  }
+  return parsed
+}
+
+async function addTorrentCandidate(baseUrl, token, { magnet, torrentLink, torrentData }) {
+  if (torrentData?.length) {
+    return addTorrentFile(baseUrl, token, torrentData)
+  }
+  if (torrentLink) {
+    const jackett = require('./jackett')
+    const data = await jackett.downloadTorrentFile(torrentLink)
+    if (data?.length) {
+      return addTorrentFile(baseUrl, token, data)
+    }
+  }
+  if (!magnet) {
+    throw new Error('Torrent has no magnet link or downloadable .torrent file')
+  }
+  return addMagnet(baseUrl, token, magnet)
+}
+
 async function getTorrentInfo(baseUrl, token, id) {
   return apiRequest(baseUrl, token, 'GET', `/torrents/info/${encodeURIComponent(id)}`)
 }
@@ -162,7 +210,7 @@ async function resolveMagnet(baseUrl, token, magnet, options = {}) {
 
   await getUser(baseUrl, token)
 
-  const added = await addMagnet(baseUrl, token, magnet)
+  const added = await addTorrentCandidate(baseUrl, token, { magnet, torrentLink: options.torrentLink, torrentData: options.torrentData })
   const torrentId = added.id
 
   while (Date.now() - startedAt < maxWaitMs) {
@@ -204,7 +252,7 @@ async function resolveCachedOnly(baseUrl, token, magnet, options = {}) {
   const maxWaitMs = options.maxWaitMs || 15000
   const startedAt = Date.now()
 
-  const added = await addMagnet(baseUrl, token, magnet)
+  const added = await addTorrentCandidate(baseUrl, token, { magnet, torrentLink: options.torrentLink, torrentData: options.torrentData })
   const torrentId = added.id
 
   while (Date.now() - startedAt < maxWaitMs) {
@@ -231,7 +279,7 @@ async function resolveStreamableQuick(baseUrl, token, magnet, options = {}) {
   const startedAt = Date.now()
 
   await getUser(baseUrl, token)
-  const added = await addMagnet(baseUrl, token, magnet)
+  const added = await addTorrentCandidate(baseUrl, token, { magnet, torrentLink: options.torrentLink, torrentData: options.torrentData })
   const torrentId = added.id
 
   while (Date.now() - startedAt < maxWaitMs) {
@@ -252,9 +300,13 @@ async function resolveStreamableQuick(baseUrl, token, magnet, options = {}) {
   return null
 }
 
-async function startDownload(baseUrl, token, magnet) {
+async function startDownload(baseUrl, token, magnet, options = {}) {
   await getUser(baseUrl, token)
-  const added = await addMagnet(baseUrl, token, magnet)
+  const added = await addTorrentCandidate(baseUrl, token, {
+    magnet,
+    torrentLink: options.torrentLink,
+    torrentData: options.torrentData,
+  })
   return added.id
 }
 
@@ -303,21 +355,25 @@ async function waitForDownload(baseUrl, token, torrentId, options = {}) {
 }
 
 async function resolveTorrentCandidate(baseUrl, token, torrent, options = {}) {
-  if (!torrent.magnet) {
-    throw new Error('Torrent has no magnet link')
+  const candidateOpts = {
+    ...options,
+    torrentLink: options.torrentLink || torrent.link,
+  }
+  if (!torrent.magnet && !candidateOpts.torrentLink) {
+    throw new Error('Torrent has no magnet link or Jackett download link')
   }
 
   if (torrent.infoHash) {
     const availability = await checkInstantAvailability(baseUrl, token, [torrent.infoHash])
     if (isCached(availability, torrent.infoHash)) {
-      const cached = await resolveCachedOnly(baseUrl, token, torrent.magnet, options)
+      const cached = await resolveCachedOnly(baseUrl, token, torrent.magnet, candidateOpts)
       if (cached) {
         return cached
       }
     }
   }
 
-  return resolveMagnet(baseUrl, token, torrent.magnet, options)
+  return resolveMagnet(baseUrl, token, torrent.magnet, candidateOpts)
 }
 
 module.exports = {

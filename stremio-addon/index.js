@@ -408,13 +408,17 @@ builder.defineStreamHandler(async (args) => {
     const cached = rank.isEntryCached(entry, availability)
     let resolved = null
 
-    if (resolvedCount < LIST_RESOLVE_COUNT && entry.torrent.magnet) {
+    if (resolvedCount < LIST_RESOLVE_COUNT && (entry.torrent.magnet || entry.torrent.link)) {
+      const candidateOpts = {
+        maxWaitMs: CACHED_RESOLVE_WAIT_MS,
+        torrentLink: entry.torrent.link,
+      }
       try {
         resolved = await debridnest.resolveCachedOnly(
           config.apiUrl,
           config.apiToken,
           entry.torrent.magnet,
-          { maxWaitMs: CACHED_RESOLVE_WAIT_MS },
+          candidateOpts,
         )
       } catch {
         resolved = null
@@ -427,7 +431,7 @@ builder.defineStreamHandler(async (args) => {
             config.apiUrl,
             config.apiToken,
             entry.torrent.magnet,
-            { maxWaitMs: STREAM_RESOLVE_WAIT_MS },
+            { ...candidateOpts, maxWaitMs: STREAM_RESOLVE_WAIT_MS },
           )
         } catch {
           resolved = null
@@ -459,6 +463,7 @@ builder.defineStreamHandler(async (args) => {
     try {
       const progressToken = progress.createJob({
         magnet: entry.torrent.magnet,
+        torrentLink: entry.torrent.link,
         apiUrl: config.apiUrl,
         apiToken: config.apiToken,
         label: entry.torrent.title,

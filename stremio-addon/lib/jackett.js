@@ -113,6 +113,28 @@ async function resolveMagnetFromJackettLink(link) {
   return null
 }
 
+async function downloadTorrentFile(link) {
+  if (!isJackettDownloadLink(link)) {
+    return null
+  }
+  try {
+    const res = await fetch(link, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(JACKETT_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      return null
+    }
+    const data = Buffer.from(await res.arrayBuffer())
+    if (data.length < 20 || data[0] !== 0x64) {
+      return null
+    }
+    return data
+  } catch {
+    return null
+  }
+}
+
 async function enrichTorrentMagnets(items) {
   const pending = items.filter(
     (item) => !item.magnet && !item.infoHash && isJackettDownloadLink(item.link),
@@ -274,4 +296,6 @@ module.exports = {
   searchTorrents,
   buildSearchQuery,
   torznabUrl,
+  downloadTorrentFile,
+  isJackettDownloadLink,
 }

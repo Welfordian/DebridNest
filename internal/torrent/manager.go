@@ -404,21 +404,35 @@ func (m *Manager) FilePath(relativePath string) (string, error) {
 	return filepath.Join(m.filesDir, clean), nil
 }
 
-func (m *Manager) processMagnet(id, magnet string) {
-	ctx := context.Background()
-	t, err := m.client.AddMagnet(magnet)
-	if err != nil {
-		m.setError(ctx, id, "magnet_error")
-		return
-	}
+const magnetMetadataTimeout = 3 * time.Minute
 
+func (m *Manager) waitTorrentInfo(t *torrent.Torrent) bool {
+	if t.Info() != nil {
+		return true
+	}
+	select {
+	case <-t.GotInfo():
+		return t.Info() != nil
+	case <-time.After(magnetMetadataTimeout):
+		return false
+	}
+}
+
+func (m *Manager) registerRuntimeTorrent(id string, t *torrent.Torrent) {
 	rt := &runtimeTorrent{id: id, t: t, done: make(chan struct{})}
 	m.mu.Lock()
 	m.active[id] = rt
 	m.mu.Unlock()
+}
 
-	<-t.GotInfo()
+func (m *Manager) dropRuntimeTorrent(id string, t *torrent.Torrent) {
+	t.Drop()
+	m.mu.Lock()
+	delete(m.active, id)
+	m.mu.Unlock()
+}
 
+func (m *Manager) finalizeTorrentMetadata(ctx context.Context, id string, t *torrent.Torrent) {
 	if m.abortIfTorrentRemoved(ctx, id, t) {
 		return
 	}
@@ -470,6 +484,44 @@ func (m *Manager) processMagnet(id, magnet string) {
 	go m.autoSelectAfterDelay(id)
 
 	m.trackTorrent(id, t)
+}
+
+func (m *Manager) processMagnet(id, magnet string) {
+	ctx := context.Background()
+	t, err := m.client.AddMagnet(magnet)
+	if err != nil {
+		m.setError(ctx, id, "magnet_error")
+		return
+	}
+
+	m.registerRuntimeTorrent(id, t)
+
+	if !m.waitTorrentInfo(t) {
+		m.setError(ctx, id, "magnet_error")
+		m.dropRuntimeTorrent(id, t)
+		return
+	}
+
+	m.finalizeTorrentMetadata(ctx, id, t)
+}
+
+func (m *Manager) processTorrentMetainfo(id string, mi *metainfo.MetaInfo) {
+	ctx := context.Background()
+	t, err := m.client.AddTorrent(mi)
+	if err != nil {
+		m.setError(ctx, id, "magnet_error")
+		return
+	}
+
+	m.registerRuntimeTorrent(id, t)
+
+	if !m.waitTorrentInfo(t) {
+		m.setError(ctx, id, "magnet_error")
+		m.dropRuntimeTorrent(id, t)
+		return
+	}
+
+	m.finalizeTorrentMetadata(ctx, id, t)
 }
 
 func (m *Manager) autoSelectAfterDelay(id string) {
@@ -739,16 +791,18 @@ func (m *Manager) resumeOne(rec storage.TorrentRecord) {
 	if err != nil {
 		return
 	}
-	<-t.GotInfo()
+
+	m.registerRuntimeTorrent(rec.ID, t)
+
+	if !m.waitTorrentInfo(t) {
+		m.setError(ctx, rec.ID, "magnet_error")
+		m.dropRuntimeTorrent(rec.ID, t)
+		return
+	}
 
 	if m.abortIfTorrentRemoved(ctx, rec.ID, t) {
 		return
 	}
-
-	rt := &runtimeTorrent{id: rec.ID, t: t, done: make(chan struct{})}
-	m.mu.Lock()
-	m.active[rec.ID] = rt
-	m.mu.Unlock()
 
 	m.applySelection(rec.ID, t, rec.Files)
 	go m.trackTorrent(rec.ID, t)
@@ -1159,7 +1213,7 @@ func (m *Manager) AddTorrentFile(ctx context.Context, data []byte) (*storage.Tor
 		return nil, err
 	}
 
-	go m.processMagnet(id, magnet)
+	go m.processTorrentMetainfo(id, mi)
 	return m.db.GetTorrent(ctx, id)
 }
 
