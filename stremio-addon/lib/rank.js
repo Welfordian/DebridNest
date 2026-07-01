@@ -190,6 +190,35 @@ function isEntryCached(entry, availability) {
   return Object.values(item).some((v) => Array.isArray(v) && v.length > 0)
 }
 
+function formatStreamFilename(title) {
+  const cleaned = String(title || '').replace(/^\[[^\]]+\]\s*/, '').trim()
+  const match = cleaned.match(/[^\s/\\]+\.(mkv|mp4|avi|webm|mov|m4v|ts|m2ts)/i)
+  if (match) {
+    return match[0]
+  }
+  return cleaned.slice(0, 120) || 'video.mkv'
+}
+
+function formatBingeGroup(entry) {
+  const tags = quality.formatQualityTags(entry.torrent.title, entry.source)
+  const normalized = String(tags || entry.source || 'unknown')
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+  return `debridnest|${normalized}`
+}
+
+function formatStremioStreamName(entry, cached = false) {
+  const tags = quality.formatQualityTags(entry.torrent.title, entry.source)
+  const qualityLabel = tags || entry.source || 'Stream'
+  const prefix = cached ? '⚡' : '⏳'
+  return `DebridNest\n${prefix} ${qualityLabel}`
+}
+
+function formatStremioStreamDescription(entry, cached = false) {
+  const display = formatStreamDisplay(entry, { cached })
+  return `${display.title}\n${display.description}`
+}
+
 module.exports = {
   rankTorrents,
   formatStreamDisplay,
@@ -197,4 +226,8 @@ module.exports = {
   formatPlaceholderLabel,
   applyCachePriority,
   isEntryCached,
+  formatStreamFilename,
+  formatBingeGroup,
+  formatStremioStreamName,
+  formatStremioStreamDescription,
 }

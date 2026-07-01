@@ -28,6 +28,9 @@ const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
 const DEFAULT_DEDUPE_STREAMS = process.env.DEDUPE_STREAMS !== '0'
 const DEFAULT_PREFER_SEASON_PACKS = process.env.PREFER_SEASON_PACKS === '1'
 const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
+const LIST_RESOLVE_COUNT = Number(process.env.LIST_RESOLVE_COUNT || 2)
+const CACHED_RESOLVE_WAIT_MS = Number(process.env.CACHED_RESOLVE_WAIT_MS || 8000)
+const STREAM_RESOLVE_WAIT_MS = Number(process.env.STREAM_RESOLVE_WAIT_MS || 10000)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
@@ -140,34 +143,50 @@ function maxResolutionDefaultOption() {
   return String(parsed)
 }
 
+function needsNotWebReady(url) {
+  if (!url || typeof url !== 'string') {
+    return true
+  }
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false
+    }
+    if (parsed.protocol === 'http:') {
+      return true
+    }
+    return !/\.mp4(\?|$)/i.test(parsed.pathname)
+  } catch {
+    return true
+  }
+}
+
 function buildStreamObject(entry, options = {}) {
   const { directUrl = null, progressToken = null, cached = false } = options
-  const display = rank.formatStreamDisplay(entry, { cached })
-  const label = entry?.torrent?.title || display.title
+  const label = entry?.torrent?.title || 'DebridNest stream'
+  let streamUrl = directUrl
 
-  const streamId = externalPlayer.registerStream({
-    directUrl,
-    progressToken,
-    label,
-  })
-  const playUrl = externalPlayer.buildPlayUrl(streamId, ADDON_BASE_URL)
-  const openUrl = `${ADDON_BASE_URL}/open/${streamId}`
-  const iinaLaunchUrl = directUrl
-    ? externalPlayer.buildIinaUrl(directUrl)
-    : `${openUrl}?format=iina`
+  if (!streamUrl) {
+    const streamId = externalPlayer.registerStream({
+      directUrl,
+      progressToken,
+      label,
+    })
+    streamUrl = externalPlayer.buildPlayUrl(streamId, ADDON_BASE_URL)
+  }
 
+  const description = rank.formatStremioStreamDescription(entry, cached)
   const stream = {
-    name: display.name,
-    title: display.title,
-    description: display.description,
-    url: directUrl || playUrl,
+    name: rank.formatStremioStreamName(entry, cached),
+    description,
+    url: streamUrl,
     behaviorHints: {
-      playerUrl: iinaLaunchUrl,
-      openInExternal: openUrl,
+      bingeGroup: rank.formatBingeGroup(entry),
+      filename: rank.formatStreamFilename(entry.torrent.title),
     },
   }
 
-  if (!directUrl) {
+  if (needsNotWebReady(streamUrl)) {
     stream.behaviorHints.notWebReady = true
   }
 
@@ -208,7 +227,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.1.8',
+  version: '3.1.9',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [
@@ -373,14 +392,11 @@ builder.defineStreamHandler(async (args) => {
   const ordered = rank.applyCachePriority(ranked, availability).slice(0, config.maxResults)
 
   const streams = []
-  let placeholders = 0
+  const placeholderCandidates = []
+  let resolvedCount = 0
   const seenHashes = new Set()
 
   for (const entry of ordered) {
-    if (placeholders >= PLACEHOLDER_COUNT) {
-      continue
-    }
-
     const hash = entry.torrent.infoHash?.toLowerCase()
     if (hash) {
       if (seenHashes.has(hash)) {
@@ -390,9 +406,53 @@ builder.defineStreamHandler(async (args) => {
     }
 
     const cached = rank.isEntryCached(entry, availability)
+    let resolved = null
 
-    // Placeholder streams are listed for fallback choice only; the magnet is
-    // added when the user plays (/play, /open, /ready) — not while listing.
+    if (resolvedCount < LIST_RESOLVE_COUNT && entry.torrent.magnet) {
+      try {
+        resolved = await debridnest.resolveCachedOnly(
+          config.apiUrl,
+          config.apiToken,
+          entry.torrent.magnet,
+          { maxWaitMs: CACHED_RESOLVE_WAIT_MS },
+        )
+      } catch {
+        resolved = null
+      }
+
+      // Only block on a full quick-resolve for the first ranked pick when nothing is cached yet.
+      if (!resolved && resolvedCount === 0 && streams.length === 0 && placeholderCandidates.length === 0) {
+        try {
+          resolved = await debridnest.resolveStreamableQuick(
+            config.apiUrl,
+            config.apiToken,
+            entry.torrent.magnet,
+            { maxWaitMs: STREAM_RESOLVE_WAIT_MS },
+          )
+        } catch {
+          resolved = null
+        }
+      }
+    }
+
+    if (resolved?.download) {
+      streams.push(buildStreamObject(entry, {
+        directUrl: resolved.download,
+        cached: cached || resolved.info?.status === 'downloaded',
+      }))
+      resolvedCount++
+      continue
+    }
+
+    placeholderCandidates.push({ entry, cached })
+  }
+
+  let placeholders = 0
+  for (const { entry, cached } of placeholderCandidates) {
+    if (placeholders >= PLACEHOLDER_COUNT) {
+      break
+    }
+
     try {
       const progressToken = progress.createJob({
         magnet: entry.torrent.magnet,
@@ -409,6 +469,11 @@ builder.defineStreamHandler(async (args) => {
       // skip failed starts
     }
   }
+
+  console.log(
+    `[streams] ${args.type}/${args.id} → ${streams.length} streams`
+    + ` (${resolvedCount} direct, ${placeholders} placeholder)`,
+  )
 
   return { streams }
 })
@@ -572,6 +637,13 @@ app.get('/health', requireLocalOrAdmin, async (req, res) => {
   } catch (err) {
     res.status(err.status || 500).json({ ok: false, error: err.message })
   }
+})
+
+app.use((req, res, next) => {
+  if (req.path.includes('/stream/')) {
+    console.log(`[http] ${req.method} ${req.path}`)
+  }
+  next()
 })
 
 app.use(getRouter(addonInterface))
