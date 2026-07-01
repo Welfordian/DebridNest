@@ -131,6 +131,54 @@ func TestAddMagnetDedup(t *testing.T) {
 	}
 }
 
+func TestAddMagnetStoresInfoHashBeforeMetadata(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+
+	magnet := "magnet:?xt=urn:btih:abcdefabcdefabcdefabcdefabcdefabcdefabcd&dn=pending"
+	hash := "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+
+	first, err := manager.AddMagnet(ctx, magnet)
+	if err != nil {
+		t.Fatalf("add magnet: %v", err)
+	}
+	if first.InfoHash != hash {
+		t.Fatalf("first info hash = %q, want %q", first.InfoHash, hash)
+	}
+
+	second, err := manager.AddMagnet(ctx, magnet)
+	if err != nil {
+		t.Fatalf("dedup add magnet: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("dedup created id %q, want %q", second.ID, first.ID)
+	}
+
+	count, err := db.CountTorrents(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("torrent count = %d, want 1", count)
+	}
+}
+
+func TestAddMagnetRejectsInvalidMagnetWithoutCreatingRow(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+
+	if _, err := manager.AddMagnet(ctx, "not-a-magnet"); err == nil {
+		t.Fatalf("AddMagnet succeeded for invalid magnet")
+	}
+	count, err := db.CountTorrents(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("torrent count = %d, want 0", count)
+	}
+}
+
 func TestInstantAvailabilityShape(t *testing.T) {
 	manager, db := testManager(t)
 	ctx := context.Background()

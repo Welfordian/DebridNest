@@ -88,6 +88,10 @@ func (h *Handler) addMagnet(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := h.manager.AddMagnet(r.Context(), magnet)
 	if err != nil {
+		if errors.Is(err, torrentmgr.ErrInvalidMagnet) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -549,7 +549,7 @@ func scanTorrentRows(rows *sql.Rows) (*TorrentRecord, error) {
 func (db *DB) ListIncompleteTorrents(ctx context.Context) ([]TorrentRecord, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, info_hash, magnet, name, original_name, status, progress, bytes, original_bytes, info_bytes, added_at, ended_at, speed, seeders
-		FROM torrents WHERE status NOT IN ('downloaded', 'error', 'dead')`)
+		FROM torrents WHERE status NOT IN ('downloaded', 'error', 'magnet_error', 'dead')`)
 	if err != nil {
 		return nil, err
 	}
@@ -628,7 +628,7 @@ func (db *DB) CountTorrents(ctx context.Context) (int, error) {
 func (db *DB) CountActiveTorrents(ctx context.Context) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM torrents WHERE status NOT IN ('downloaded', 'error', 'dead')`).Scan(&n)
+		SELECT COUNT(*) FROM torrents WHERE status NOT IN ('downloaded', 'error', 'magnet_error', 'dead')`).Scan(&n)
 	return n, err
 }
 

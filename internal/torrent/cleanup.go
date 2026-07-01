@@ -151,10 +151,10 @@ func (m *Manager) abortIfTorrentRemoved(ctx context.Context, id string, t *torre
 	if _, err := m.db.GetTorrent(ctx, id); err == nil {
 		return false
 	}
-	t.Drop()
 	m.mu.Lock()
 	delete(m.active, id)
 	m.mu.Unlock()
+	safeDropTorrent(t)
 	if hash := normalizeInfoHash(t.InfoHash().HexString()); hash != "" {
 		_ = os.RemoveAll(filepath.Join(m.filesDir, hash))
 		m.invalidateDiskUsed()

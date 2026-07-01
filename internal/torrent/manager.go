@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +47,8 @@ type Manager struct {
 type Hooks struct {
 	OnDownloadComplete func(name string)
 }
+
+var ErrInvalidMagnet = errors.New("invalid magnet")
 
 func (m *Manager) SetHooks(h *Hooks) {
 	m.mu.Lock()
@@ -143,21 +146,32 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) AddMagnet(ctx context.Context, magnet string) (*storage.TorrentRecord, error) {
-	if ih, err := infoHashFromMagnet(magnet); err == nil {
-		if existing, err := m.db.GetTorrentByHash(ctx, ih); err == nil && existing != nil {
-			m.refreshProgress(ctx, existing)
-			if existing.Status == "downloaded" {
-				m.ensureHostLinks(ctx, existing)
-				return existing, nil
-			}
-			m.mu.RLock()
-			_, active := m.active[existing.ID]
-			m.mu.RUnlock()
-			if !active {
-				go m.resumeOne(*existing)
-			}
+	magnet = strings.TrimSpace(magnet)
+	ih, err := infoHashFromMagnet(magnet)
+	if err != nil || ih == "" {
+		return nil, ErrInvalidMagnet
+	}
+
+	if existing, err := m.db.GetTorrentByHash(ctx, ih); err == nil && existing != nil {
+		m.refreshProgress(ctx, existing)
+		if existing.Status == "downloaded" {
+			m.ensureHostLinks(ctx, existing)
 			return existing, nil
 		}
+		m.mu.RLock()
+		_, active := m.active[existing.ID]
+		m.mu.RUnlock()
+		if !active {
+			if isFailedTorrentStatus(existing.Status) {
+				if err := m.db.ResetTorrentForRetry(ctx, existing.ID); err == nil {
+					if updated, getErr := m.db.GetTorrent(ctx, existing.ID); getErr == nil {
+						existing = updated
+					}
+				}
+			}
+			go m.resumeOne(*existing)
+		}
+		return existing, nil
 	}
 
 	id, err := newTorrentID()
@@ -167,6 +181,7 @@ func (m *Manager) AddMagnet(ctx context.Context, magnet string) (*storage.Torren
 
 	rec := storage.TorrentRecord{
 		ID:       id,
+		InfoHash: ih,
 		Magnet:   magnet,
 		Status:   "magnet_conversion",
 		AddedAt:  time.Now().UTC(),
@@ -426,10 +441,22 @@ func (m *Manager) registerRuntimeTorrent(id string, t *torrent.Torrent) {
 }
 
 func (m *Manager) dropRuntimeTorrent(id string, t *torrent.Torrent) {
-	t.Drop()
 	m.mu.Lock()
 	delete(m.active, id)
 	m.mu.Unlock()
+	safeDropTorrent(t)
+}
+
+func safeDropTorrent(t *torrent.Torrent) {
+	if t == nil {
+		return
+	}
+	defer func() {
+		if v := recover(); v != nil && fmt.Sprint(v) != "already closed" {
+			panic(v)
+		}
+	}()
+	t.Drop()
 }
 
 func (m *Manager) finalizeTorrentMetadata(ctx context.Context, id string, t *torrent.Torrent) {
@@ -787,8 +814,16 @@ func (m *Manager) resumeIncomplete(ctx context.Context) error {
 
 func (m *Manager) resumeOne(rec storage.TorrentRecord) {
 	ctx := context.Background()
+	if rec.InfoHash == "" {
+		if ih, err := infoHashFromMagnet(rec.Magnet); err == nil && ih != "" {
+			rec.InfoHash = ih
+			_ = m.db.UpdateTorrent(ctx, rec)
+		}
+	}
+
 	t, err := m.client.AddMagnet(rec.Magnet)
 	if err != nil {
+		m.setError(ctx, rec.ID, "magnet_error")
 		return
 	}
 
@@ -1146,7 +1181,7 @@ func (m *Manager) Retry(ctx context.Context, torrentID string) error {
 	if err != nil {
 		return fmt.Errorf("unknown torrent")
 	}
-	if rec.Status != "error" && rec.Status != "magnet_error" && rec.Status != "dead" {
+	if !isFailedTorrentStatus(rec.Status) {
 		return fmt.Errorf("torrent is not in a failed state")
 	}
 	if err := m.db.ResetTorrentForRetry(ctx, torrentID); err != nil {
@@ -1158,6 +1193,10 @@ func (m *Manager) Retry(ctx context.Context, torrentID string) error {
 	}
 	go m.resumeOne(*updated)
 	return nil
+}
+
+func isFailedTorrentStatus(status string) bool {
+	return status == "error" || status == "magnet_error" || status == "dead"
 }
 
 func (m *Manager) AddTorrentFile(ctx context.Context, data []byte) (*storage.TorrentRecord, error) {

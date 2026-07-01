@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestOpenRunsMigrationsOnce(t *testing.T) {
@@ -65,6 +66,41 @@ func TestOpenRepairsPartialLegacyObjectStorageMigration(t *testing.T) {
 
 	assertRecordedMigrations(t, db, migrationNames(t))
 	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+}
+
+func TestFailedMagnetConversionsAreNotIncompleteOrActive(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := t.Context()
+	now := time.Now().UTC()
+	for _, rec := range []TorrentRecord{
+		{ID: "ACTIVE01", InfoHash: "1111111111111111111111111111111111111111", Magnet: "magnet:?xt=urn:btih:1111111111111111111111111111111111111111", Status: "magnet_conversion", AddedAt: now},
+		{ID: "FAILED01", InfoHash: "2222222222222222222222222222222222222222", Magnet: "magnet:?xt=urn:btih:2222222222222222222222222222222222222222", Status: "magnet_error", AddedAt: now},
+	} {
+		if err := db.CreateTorrent(ctx, rec); err != nil {
+			t.Fatalf("create %s: %v", rec.ID, err)
+		}
+	}
+
+	incomplete, err := db.ListIncompleteTorrents(ctx)
+	if err != nil {
+		t.Fatalf("list incomplete: %v", err)
+	}
+	if len(incomplete) != 1 || incomplete[0].ID != "ACTIVE01" {
+		t.Fatalf("incomplete = %+v, want only ACTIVE01", incomplete)
+	}
+
+	active, err := db.CountActiveTorrents(ctx)
+	if err != nil {
+		t.Fatalf("count active: %v", err)
+	}
+	if active != 1 {
+		t.Fatalf("active count = %d, want 1", active)
+	}
 }
 
 func seedLegacyDatabase(t *testing.T, dir string, names ...string) {
