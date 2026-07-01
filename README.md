@@ -113,13 +113,15 @@ See [`.env.example`](.env.example) for the full list of environment variables (w
 | `CLOUDFLARE_TUNNEL_TOKEN` | — | For `--profile tunnel` |
 | `DEBRIDNEST_RETENTION_DAYS` | `30` | Auto-delete completed torrents after N days |
 | `DEBRIDNEST_DISK_QUOTA_GB` | `0` | Disk quota in GB (0 = unlimited) |
-| `DEBRIDNEST_DOWNLOAD_RATE_LIMIT_MBPS` | `0` | Download egress cap on `/dl/*` |
+| `DEBRIDNEST_DOWNLOAD_RATE_LIMIT_MBPS` | `0` | Download egress cap on signed `/dl/*` and HLS segments |
 | `DEBRIDNEST_WEBDAV_ENABLED` | `1` | WebDAV library access at `/webdav/` |
 | `DEBRIDNEST_WEBDAV_USER` / `DEBRIDNEST_WEBDAV_PASSWORD` | — | Custom WebDAV Basic auth (default: user `debridnest`, password = API token) |
 | `DEBRIDNEST_METRICS` | `0` | Enable Prometheus metrics at `/metrics` |
 | `PREFER_SDR` | `0` | Stremio addon: prefer SDR over HDR/DV |
 | `MAX_RESOLUTION` | `0` | Stremio addon: max resolution (`720`, `1080`, `2160`; `0` = any) |
 | `MAX_FILE_SIZE_GB` | `0` | Stremio addon: max torrent size in GB (`0` = unlimited) |
+
+Generate a real `DEBRIDNEST_API_TOKEN` before startup; copied placeholders such as `change-me-to-a-long-random-string` are rejected. Numeric environment variables are validated at startup, and `0` is only accepted for settings documented as disabled, unlimited, or defaulted.
 
 ## Legal
 

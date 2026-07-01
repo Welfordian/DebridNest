@@ -86,31 +86,37 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 		return nil, time.Time{}, 0, fmt.Errorf("file not found")
 	}
 
-	if file.RemoteStored && m.objectStore != nil && m.objectStore.Enabled() {
-		key := file.ObjectKey
-		if key == "" {
-			key = m.objectStore.ObjectKey(rec.InfoHash, file.Path)
-		}
-		r, err := m.objectStore.Open(ctx, key)
+	if file.RemoteStored {
+		store, err := m.objectStoreForSettings()
 		if err != nil {
 			return nil, time.Time{}, 0, err
 		}
-		start := opts.StartOffset
-		if start < 0 {
-			start = 0
-		}
-		if start > 0 {
-			if _, err := r.Seek(start, io.SeekStart); err != nil {
-				r.Close()
+		if store != nil && store.Enabled() {
+			key := file.ObjectKey
+			if key == "" {
+				key = store.ObjectKey(rec.InfoHash, file.Path)
+			}
+			r, err := store.Open(ctx, key)
+			if err != nil {
 				return nil, time.Time{}, 0, err
 			}
+			start := opts.StartOffset
+			if start < 0 {
+				start = 0
+			}
+			if start > 0 {
+				if _, err := r.Seek(start, io.SeekStart); err != nil {
+					r.Close()
+					return nil, time.Time{}, 0, err
+				}
+			}
+			size, modTime, err := store.Head(ctx, key)
+			if err != nil {
+				modTime = time.Now()
+				size = file.Bytes
+			}
+			return r, modTime, size, nil
 		}
-		size, modTime, err := m.objectStore.Head(ctx, key)
-		if err != nil {
-			modTime = time.Now()
-			size = file.Bytes
-		}
-		return r, modTime, size, nil
 	}
 
 	if rec.Status == "downloaded" {

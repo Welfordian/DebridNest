@@ -11,12 +11,14 @@ import (
 	"time"
 )
 
+const hlsJobTimeout = 6 * time.Hour
+
 var incompatibleAudio = map[string]bool{
-	"ac3":   true,
-	"eac3":  true,
-	"dts":   true,
+	"ac3":    true,
+	"eac3":   true,
+	"dts":    true,
 	"truehd": true,
-	"dtshd": true,
+	"dtshd":  true,
 }
 
 type hlsJob struct {
@@ -27,6 +29,8 @@ type hlsJob struct {
 	mu  sync.Mutex
 	err error
 }
+
+type hlsRunner func(context.Context, *hlsJob) error
 
 func (j *hlsJob) waitReady(ctx context.Context, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
@@ -50,17 +54,14 @@ func (j *hlsJob) waitReady(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
-func (j *hlsJob) run(ctx context.Context) {
-	defer close(j.done)
-
+func runHLSJob(ctx context.Context, j *hlsJob) error {
 	if _, err := os.Stat(filepath.Join(j.outDir, "index.m3u8")); err == nil {
-		return
+		return nil
 	}
 
 	codec, err := probeAudioCodec(ctx, j.srcPath)
 	if err != nil {
-		j.setErr(err)
-		return
+		return err
 	}
 
 	args := []string{
@@ -84,9 +85,12 @@ func (j *hlsJob) run(ctx context.Context) {
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		j.setErr(fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(string(out))))
-		return
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("ffmpeg: %w", ctxErr)
+		}
+		return fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	return nil
 }
 
 func (j *hlsJob) setErr(err error) {
@@ -105,6 +109,9 @@ func probeAudioCodec(ctx context.Context, srcPath string) (string, error) {
 	)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("ffprobe: %w", ctxErr)
+		}
 		if _, statErr := os.Stat(srcPath); statErr != nil {
 			return "", fmt.Errorf("source file missing")
 		}

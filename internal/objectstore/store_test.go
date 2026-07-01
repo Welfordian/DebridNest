@@ -119,3 +119,34 @@ func TestLoadFromEnvEnabled(t *testing.T) {
 		t.Fatalf("flags: pathStyle=%v offload=%v", cfg.ForcePathStyle, cfg.OffloadLocal)
 	}
 }
+
+func TestLoadFromEnvDirectMode(t *testing.T) {
+	t.Setenv("DEBRIDNEST_S3_ENABLED", "1")
+	t.Setenv("DEBRIDNEST_S3_BUCKET", "my-bucket")
+	t.Setenv("DEBRIDNEST_S3_DIRECT", "1")
+	t.Setenv("DEBRIDNEST_S3_OFFLOAD_LOCAL", "")
+	t.Setenv("DEBRIDNEST_S3_EARLY_OFFLOAD", "")
+
+	cfg := LoadFromEnv()
+	if !cfg.EarlyOffload {
+		t.Fatal("expected EarlyOffload true when S3_DIRECT=1")
+	}
+	if !cfg.OffloadLocal {
+		t.Fatal("expected OffloadLocal true by default when S3_DIRECT=1")
+	}
+}
+
+func TestLoadFromEnvDirectRespectsExplicitOffloadLocalOff(t *testing.T) {
+	t.Setenv("DEBRIDNEST_S3_ENABLED", "1")
+	t.Setenv("DEBRIDNEST_S3_BUCKET", "my-bucket")
+	t.Setenv("DEBRIDNEST_S3_DIRECT", "1")
+	t.Setenv("DEBRIDNEST_S3_OFFLOAD_LOCAL", "0")
+
+	cfg := LoadFromEnv()
+	if !cfg.EarlyOffload {
+		t.Fatal("expected EarlyOffload true when S3_DIRECT=1")
+	}
+	if cfg.OffloadLocal {
+		t.Fatal("expected OffloadLocal false when explicitly disabled")
+	}
+}

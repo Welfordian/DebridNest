@@ -6,8 +6,10 @@
 |----------|---------|-------------|
 | `DEBRIDNEST_RETENTION_DAYS` | `30` | Auto-delete completed torrents after N days (`0` = disabled) |
 | `DEBRIDNEST_DISK_QUOTA_GB` | `0` | Max disk usage for `/data/files` in GB (`0` = unlimited) |
-| `DEBRIDNEST_DOWNLOAD_RATE_LIMIT_MBPS` | `0` | Cap download egress on `/dl/*` URLs in MB/s (`0` = unlimited) |
+| `DEBRIDNEST_DOWNLOAD_RATE_LIMIT_MBPS` | `0` | Cap download egress on signed `/dl/*` URLs and HLS segments in MB/s (`0` = unlimited) |
 | `DEBRIDNEST_METRICS` | `0` | Enable Prometheus metrics at `GET /metrics` (`1` = enabled) |
+
+Configuration is validated at startup. Replace example API tokens with a strong random value; known placeholders such as `change-me-to-a-long-random-string` are rejected. Numeric values must parse cleanly and stay within sane ranges; `0` is allowed for retention, disk quota, rate limit, auto-select delay, stream buffer defaults, and seed stop thresholds where documented.
 
 Retention runs every 15 minutes. When quota is exceeded, oldest completed torrents (by `ended_at`) are evicted first.
 
@@ -17,9 +19,9 @@ Open `http://localhost:8080/dashboard/` after starting DebridNest.
 
 1. Paste your API token on first visit (stored in browser `localStorage`)
 2. **Overview** — disk usage, active downloads, aggregate speed, quick links to other tabs
-3. **Torrents** — list, add magnet, upload `.torrent`, delete, batch delete, retry failed jobs
+3. **Torrents** — list, add magnet, upload `.torrent`; delete, batch delete, and retry failed jobs require admin
 4. **Library** — browse completed files and copy download links
-5. **Settings** — retention, quota, rate limit, webhook URLs, notification toggles, maintenance cleanup, purge (admin)
+5. **Settings** — retention, quota, rate limit, webhook URLs, notification toggles; maintenance cleanup and purge require admin
 6. **Users** *(admin)* — create/delete users, rotate tokens
 7. **Activity** *(admin)* — audit log of admin and torrent actions
 8. **Logs** *(admin)* — recent server log lines
@@ -53,7 +55,7 @@ Returns `{"name":"owner","role":"admin","admin":true}`.
 | DELETE | `/api/v1/users/{id}` | Delete user |
 | POST | `/api/v1/users/{id}/rotate-token` | Rotate token — returns new token once |
 
-Admin-only routes also include purge, settings PATCH, activity log, and server logs.
+Admin-only routes also include destructive torrent actions, retry, maintenance cleanup, purge, settings PATCH, activity log, and server logs.
 
 ### Runtime settings
 
@@ -74,7 +76,7 @@ qBittorrent login (`/api/v2/auth/login`) accepts the legacy qBit username/passwo
 
 ## Admin API
 
-All routes require `Authorization: Bearer <token>` (any valid user token in multi-user mode).
+All routes require `Authorization: Bearer <token>`. The `Auth` column is the minimum capability: `user` means any valid user or admin token, while `admin` requires an admin token. Adding magnets and uploading `.torrent` files intentionally remain user-level for integration compatibility; destructive torrent operations and maintenance actions are admin-only.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -86,10 +88,10 @@ All routes require `Authorization: Bearer <token>` (any valid user token in mult
 | GET | `/api/v1/torrents/{id}` | user | Torrent detail with files and links |
 | POST | `/api/v1/torrents/add` | user | Add magnet `{"magnet"}` |
 | POST | `/api/v1/torrents/upload` | user | Upload `.torrent` file (multipart field `torrent`) |
-| POST | `/api/v1/torrents/batch-delete` | user | Delete many `{"ids":["…"]}` |
-| DELETE | `/api/v1/torrents/{id}` | user | Delete torrent and files |
-| POST | `/api/v1/torrents/{id}/retry` | user | Re-queue failed torrent |
-| POST | `/api/v1/maintenance/cleanup` | user | Run retention/quota cleanup now |
+| POST | `/api/v1/torrents/batch-delete` | admin | Delete many `{"ids":["…"]}` |
+| DELETE | `/api/v1/torrents/{id}` | admin | Delete torrent and files |
+| POST | `/api/v1/torrents/{id}/retry` | admin | Re-queue failed torrent |
+| POST | `/api/v1/maintenance/cleanup` | admin | Run retention/quota cleanup now |
 | GET | `/api/v1/settings` | user | Merged env defaults + runtime overrides |
 | POST | `/api/v1/torrents/purge` | admin | Purge by status filter `{"filter"}` |
 | PATCH | `/api/v1/settings` | admin | Update retention, quota, rate limit, webhooks, S3 |
@@ -97,7 +99,7 @@ All routes require `Authorization: Bearer <token>` (any valid user token in mult
 | GET | `/api/v1/activity` | admin | Audit log (`?limit=&offset=`) |
 | GET | `/api/v1/logs` | admin | Recent server log lines (`?limit=`) |
 
-User management routes (`/api/v1/users/*`) are documented in [Multi-user authentication](#multi-user-authentication) below.
+User management routes (`/api/v1/users/*`) are documented in [Multi-user authentication](#multi-user-authentication).
 
 ## Notifications and webhooks
 
@@ -132,6 +134,8 @@ S3 upload is **opt-in**. When enabled, DebridNest uploads each completed torrent
 | `s3Prefix` | `DEBRIDNEST_S3_PREFIX` | Key prefix (e.g. `debridnest/`) |
 | `s3ForcePathStyle` | `DEBRIDNEST_S3_FORCE_PATH_STYLE` | Path-style URLs (`1` = on; often needed for MinIO) |
 | `s3OffloadLocal` | `DEBRIDNEST_S3_OFFLOAD_LOCAL` | Delete local copy after successful upload (`1` = on) |
+| — | `DEBRIDNEST_S3_DIRECT` | Minimal-local preset: early per-file upload + offload local (see [object-storage.md](object-storage.md)) |
+| — | `DEBRIDNEST_FILES_DIR` | Override torrent files directory (default `{DATA_DIR}/files`) |
 
 Objects are stored at `{prefix}/{infohash}/{file-path}`. Use **Test connection** in the dashboard or:
 
@@ -167,6 +171,8 @@ DEBRIDNEST_S3_SECRET_KEY=<application-key>
 ### Offload behavior
 
 When `s3OffloadLocal=1`, the local file under `/data/files` is removed after a successful upload. Signed download links (`/dl/*`) continue to work by reading from object storage. **WebDAV serves local files only** — offloaded content is not available via WebDAV until a future release adds remote passthrough.
+
+For small VPS disks, set `DEBRIDNEST_S3_DIRECT=1` to upload and delete each file as soon as it finishes downloading (instead of waiting for the whole torrent). See [object-storage.md](object-storage.md) for feasibility notes on FUSE mounts vs this staging model.
 
 ## Torrent file upload
 
@@ -221,7 +227,7 @@ Restrict `/metrics` to internal networks (firewall or reverse proxy) in producti
 
 ## Production checklist
 
-- [ ] Set a strong random `DEBRIDNEST_API_TOKEN` and optional separate `DEBRIDNEST_LINK_SECRET`
+- [ ] Set a strong random `DEBRIDNEST_API_TOKEN` (not the checked-in placeholder) and optional separate `DEBRIDNEST_LINK_SECRET`
 - [ ] Set `DEBRIDNEST_PUBLIC_URL` to the HTTPS URL clients use for streaming
 - [ ] Enable TLS (`docker compose --profile tls`) or Cloudflare Tunnel (`--profile tunnel`)
 - [ ] Configure `DEBRIDNEST_DISK_QUOTA_GB` and `DEBRIDNEST_RETENTION_DAYS` for your disk budget

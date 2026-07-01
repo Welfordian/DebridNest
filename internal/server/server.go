@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/debridnest/debridnest/internal/activity"
 	"github.com/debridnest/debridnest/internal/api/admin"
 	"github.com/debridnest/debridnest/internal/api/qbit"
@@ -65,7 +66,7 @@ func NewRouter(opts Options) (chi.Router, error) {
 	if err := webdav.Mount(r, opts.Config, opts.Manager); err != nil {
 		return nil, err
 	}
-	if err := transcode.Mount(r, opts.Config, opts.Manager); err != nil {
+	if err := transcode.Mount(r, opts.Config, opts.Manager, opts.Signer); err != nil {
 		return nil, err
 	}
 

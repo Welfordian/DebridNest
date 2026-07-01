@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -86,16 +87,65 @@ func newTestHandler(t *testing.T) (*Handler, *torrent.Manager, *storage.DB) {
 	return NewHandler(cfg, manager, nil, activitySvc, settingsStore, authSvc), manager, db
 }
 
-func serve(t *testing.T, h *Handler, method, path string, body []byte) *httptest.ResponseRecorder {
+func newMultiUserTestHandler(t *testing.T) (*Handler, *auth.Service, *torrent.Manager, *storage.DB) {
+	t.Helper()
+	cfg := testConfig()
+	cfg.MultiUserEnabled = true
+	authSvc, settingsStore, activitySvc, db := newTestServices(t, cfg)
+
+	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
+	manager, err := torrent.NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+
+	t.Cleanup(func() { _ = manager.Close() })
+	return NewHandler(cfg, manager, nil, activitySvc, settingsStore, authSvc), authSvc, manager, db
+}
+
+func serveWithToken(t *testing.T, h *Handler, token, method, path string, body []byte, contentTypes ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	req.Header.Set("Authorization", authHeader(h.cfg.APIToken))
-	if body != nil {
+	req.Header.Set("Authorization", authHeader(token))
+	if len(contentTypes) > 0 {
+		req.Header.Set("Content-Type", contentTypes[0])
+	} else if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 	return rec
+}
+
+func serve(t *testing.T, h *Handler, method, path string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	return serveWithToken(t, h, h.cfg.APIToken, method, path, body)
+}
+
+func createUserToken(t *testing.T, authSvc *auth.Service, name string) string {
+	t.Helper()
+	_, token, err := authSvc.CreateUser(context.Background(), name, "user")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	return token
+}
+
+func multipartTorrentBody(t *testing.T, payload []byte) ([]byte, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("torrent", "sample.torrent")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(payload); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	return body.Bytes(), writer.FormDataContentType()
 }
 
 func TestSystemEndpoint(t *testing.T) {
@@ -165,6 +215,144 @@ func TestAddMagnet(t *testing.T) {
 	}
 	if resp["status"] != "magnet_conversion" {
 		t.Fatalf("status = %v, want magnet_conversion", resp["status"])
+	}
+}
+
+func TestNonAdminReadStatusAndAddCapabilities(t *testing.T) {
+	h, authSvc, _, db := newMultiUserTestHandler(t)
+	token := createUserToken(t, authSvc, "reader")
+	ctx := context.Background()
+
+	if err := db.CreateTorrent(ctx, storage.TorrentRecord{
+		ID:       "READ001",
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+		Name:     "readable",
+		Status:   "magnet_conversion",
+		AddedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed torrent: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"me", "/me"},
+		{"system", "/system"},
+		{"stats", "/stats"},
+		{"config", "/config"},
+		{"settings", "/settings"},
+		{"torrents", "/torrents"},
+		{"torrent detail", "/torrents/READ001"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := serveWithToken(t, h, token, http.MethodGet, tc.path, nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	addBody := []byte(`{"magnet":"magnet:?xt=urn:btih:1111111111111111111111111111111111111111&dn=user-add"}`)
+	addRec := serveWithToken(t, h, token, http.MethodPost, "/torrents/add", addBody)
+	if addRec.Code != http.StatusCreated {
+		t.Fatalf("add status = %d, body = %s", addRec.Code, addRec.Body.String())
+	}
+
+	uploadBody, uploadType := multipartTorrentBody(t, []byte("not a torrent"))
+	uploadRec := serveWithToken(t, h, token, http.MethodPost, "/torrents/upload", uploadBody, uploadType)
+	if uploadRec.Code == http.StatusForbidden {
+		t.Fatalf("upload unexpectedly forbidden: body = %s", uploadRec.Body.String())
+	}
+	if uploadRec.Code != http.StatusBadRequest {
+		t.Fatalf("upload status = %d, want 400 from torrent validation; body = %s", uploadRec.Code, uploadRec.Body.String())
+	}
+}
+
+func TestNonAdminDestructiveCapabilitiesForbidden(t *testing.T) {
+	h, authSvc, _, db := newMultiUserTestHandler(t)
+	token := createUserToken(t, authSvc, "limited")
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, rec := range []storage.TorrentRecord{
+		{ID: "DELETE01", InfoHash: "delete01", Name: "delete", Status: "magnet_conversion", AddedAt: now},
+		{ID: "BATCH001", InfoHash: "batch001", Name: "batch", Status: "magnet_conversion", AddedAt: now},
+		{ID: "RETRY001", InfoHash: "retry001", Name: "retry", Status: "error", AddedAt: now},
+	} {
+		if err := db.CreateTorrent(ctx, rec); err != nil {
+			t.Fatalf("seed torrent %s: %v", rec.ID, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"delete", http.MethodDelete, "/torrents/DELETE01", nil},
+		{"batch delete", http.MethodPost, "/torrents/batch-delete", []byte(`{"ids":["BATCH001"]}`)},
+		{"retry", http.MethodPost, "/torrents/RETRY001/retry", nil},
+		{"maintenance cleanup", http.MethodPost, "/maintenance/cleanup", nil},
+		{"purge", http.MethodPost, "/torrents/purge", []byte(`{"filter":"completed"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := serveWithToken(t, h, token, tc.method, tc.path, tc.body)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	for _, id := range []string{"DELETE01", "BATCH001", "RETRY001"} {
+		rec, err := db.GetTorrent(ctx, id)
+		if err != nil {
+			t.Fatalf("torrent %s was removed or hidden: %v", id, err)
+		}
+		if id == "RETRY001" && rec.Status != "error" {
+			t.Fatalf("retry status = %q, want error", rec.Status)
+		}
+	}
+}
+
+func TestAdminDestructiveCapabilitiesStillWork(t *testing.T) {
+	h, _, db := newTestHandler(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, rec := range []storage.TorrentRecord{
+		{ID: "ADMINDEL", InfoHash: "admindel", Name: "delete", Status: "magnet_conversion", AddedAt: now},
+		{ID: "ADMINRTY", InfoHash: "adminrty", Name: "retry", Status: "error", AddedAt: now},
+	} {
+		if err := db.CreateTorrent(ctx, rec); err != nil {
+			t.Fatalf("seed torrent %s: %v", rec.ID, err)
+		}
+	}
+
+	deleteRec := serve(t, h, http.MethodDelete, "/torrents/ADMINDEL", nil)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, body = %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if _, err := db.GetTorrent(ctx, "ADMINDEL"); err == nil {
+		t.Fatal("deleted torrent still exists")
+	}
+
+	retryRec := serve(t, h, http.MethodPost, "/torrents/ADMINRTY/retry", nil)
+	if retryRec.Code != http.StatusNoContent {
+		t.Fatalf("retry status = %d, body = %s", retryRec.Code, retryRec.Body.String())
+	}
+	retried, err := db.GetTorrent(ctx, "ADMINRTY")
+	if err != nil {
+		t.Fatalf("get retried torrent: %v", err)
+	}
+	if retried.Status != "queued" {
+		t.Fatalf("retry status = %q, want queued", retried.Status)
+	}
+
+	cleanupRec := serve(t, h, http.MethodPost, "/maintenance/cleanup", nil)
+	if cleanupRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("cleanup status = %d, want handler-level 503; body = %s", cleanupRec.Code, cleanupRec.Body.String())
 	}
 }
 
@@ -347,10 +535,10 @@ func TestGetSettingsRedaction(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := settingsStore.Patch(ctx, map[string]any{
-		"webhookDiscordUrl":   "https://discord.example/secret-hook",
-		"webhookGotifyUrl":    "https://gotify.example/message?token=abc",
-		"webhookGotifyToken":  "super-secret",
-		"webhookNtfyTopic":    "my-private-topic",
+		"webhookDiscordUrl":  "https://discord.example/secret-hook",
+		"webhookGotifyUrl":   "https://gotify.example/message?token=abc",
+		"webhookGotifyToken": "super-secret",
+		"webhookNtfyTopic":   "my-private-topic",
 	})
 	if err != nil {
 		t.Fatalf("patch settings: %v", err)

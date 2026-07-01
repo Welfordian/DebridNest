@@ -10,32 +10,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/links"
 	"github.com/debridnest/debridnest/internal/metrics"
 	"github.com/debridnest/debridnest/internal/storage"
 	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
-	cfg         config.Config
-	manager     *torrentmgr.Manager
-	signer      *links.Signer
-	rateLimiter *links.RateLimiter
-	metrics     *metrics.Collector
-	auth        *auth.Service
+	cfg     config.Config
+	manager *torrentmgr.Manager
+	signer  *links.Signer
+	metrics *metrics.Collector
+	auth    *auth.Service
 }
 
 func NewHandler(cfg config.Config, manager *torrentmgr.Manager, signer *links.Signer, m *metrics.Collector, authSvc *auth.Service) *Handler {
 	return &Handler{
-		cfg:         cfg,
-		manager:     manager,
-		signer:      signer,
-		rateLimiter: links.NewRateLimiter(cfg.DownloadRateLimitMB),
-		metrics:     m,
-		auth:        authSvc,
+		cfg:     cfg,
+		manager: manager,
+		signer:  signer,
+		metrics: m,
+		auth:    authSvc,
 	}
 }
 
@@ -342,8 +340,19 @@ func (h *Handler) serveSigned(w http.ResponseWriter, r *http.Request, rawPath st
 		}()
 	}
 
-	limited := h.rateLimiter.ReadSeekCloser(reader)
+	limited := reader
+	if limiter := h.downloadRateLimiter(); limiter != nil {
+		limited = limiter.ReadSeekCloser(reader)
+	}
 	http.ServeContent(out, r, filename, modTime, limited)
+}
+
+func (h *Handler) downloadRateLimiter() *links.RateLimiter {
+	limit := h.cfg.DownloadRateLimitMB
+	if h.manager != nil {
+		limit = h.manager.GetDownloadRateLimitMbps()
+	}
+	return links.NewRateLimiter(limit)
 }
 
 func torrentInfoResponse(cfg config.Config, rec *storage.TorrentRecord) map[string]any {

@@ -15,5 +15,17 @@
     "express": "^5.2.1",
     "fast-xml-parser": "^5.2.5",
     "stremio-addon-sdk": "^1.6.10"
+  },
+  "overrides": {
+    "stremio-addon-sdk": {
+      "router": {
+        "path-to-regexp": "0.1.13"
+      },
+      "inquirer": {
+        "external-editor": {
+          "tmp": "0.2.7"
+        }
+      }
+    }
   }
 }

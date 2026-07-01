@@ -59,6 +59,10 @@ func (s *Store) OffloadLocal() bool {
 	return s != nil && s.cfg.OffloadLocal
 }
 
+func (s *Store) EarlyOffload() bool {
+	return s != nil && s.cfg.EarlyOffload
+}
+
 // TestConnection verifies bucket access via HeadBucket, falling back to ListObjectsV2.
 func (s *Store) TestConnection(ctx context.Context) error {
 	if !s.Enabled() {

@@ -341,6 +341,7 @@ func (s *Store) S3Config() objectstore.Config {
 		Prefix:         s.GetS3Prefix(),
 		ForcePathStyle: s.GetS3ForcePathStyle(),
 		OffloadLocal:   s.GetS3OffloadLocal(),
+		EarlyOffload:   s.s3Defaults().EarlyOffload,
 	}
 }
 

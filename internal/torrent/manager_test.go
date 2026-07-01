@@ -14,6 +14,7 @@ import (
 
 func testManager(t *testing.T) (*Manager, *storage.DB) {
 	t.Helper()
+	clearObjectStoreEnv(t)
 	cfg := config.Config{
 		DataDir:         t.TempDir(),
 		TorrentPort:     "0",
@@ -43,6 +44,56 @@ func testManager(t *testing.T) (*Manager, *storage.DB) {
 		_ = db.Close()
 	})
 	return manager, db
+}
+
+func clearObjectStoreEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"DEBRIDNEST_S3_ENABLED",
+		"DEBRIDNEST_S3_ENDPOINT",
+		"DEBRIDNEST_S3_BUCKET",
+		"DEBRIDNEST_S3_REGION",
+		"DEBRIDNEST_S3_ACCESS_KEY",
+		"DEBRIDNEST_S3_SECRET_KEY",
+		"DEBRIDNEST_S3_PREFIX",
+		"DEBRIDNEST_S3_FORCE_PATH_STYLE",
+		"DEBRIDNEST_S3_OFFLOAD_LOCAL",
+		"DEBRIDNEST_S3_DIRECT",
+		"DEBRIDNEST_S3_EARLY_OFFLOAD",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestObjectStoreRefreshesFromRuntimeS3Settings(t *testing.T) {
+	manager, _ := testManager(t)
+	ctx := context.Background()
+	hash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	store, err := manager.objectStoreForSettings()
+	if err != nil {
+		t.Fatalf("initial store: %v", err)
+	}
+	if got, want := store.ObjectKey(hash, "/movie.mkv"), hash+"/movie.mkv"; got != want {
+		t.Fatalf("initial object key = %q, want %q", got, want)
+	}
+
+	if _, err := manager.settings.Patch(ctx, map[string]any{
+		"s3Prefix": "runtime-prefix",
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	refreshed, err := manager.objectStoreForSettings()
+	if err != nil {
+		t.Fatalf("refreshed store: %v", err)
+	}
+	if refreshed == store {
+		t.Fatal("expected object store to refresh after S3 settings changed")
+	}
+	if got, want := refreshed.ObjectKey(hash, "/movie.mkv"), "runtime-prefix/"+hash+"/movie.mkv"; got != want {
+		t.Fatalf("refreshed object key = %q, want %q", got, want)
+	}
 }
 
 func TestAddMagnetDedup(t *testing.T) {

@@ -52,6 +52,35 @@ func (s *Signer) VerifyDownload(relativePath string, expiresUnix int64, sig stri
 	return hmac.Equal([]byte(expected), []byte(sig))
 }
 
+func (s *Signer) SignHLSAsset(torrentID string, fileID int, asset string, expires time.Time) string {
+	expiresUnix := expires.Unix()
+	sig := s.signHLSPayload(torrentID, fileID, asset, expiresUnix)
+	return fmt.Sprintf("%s/hls/%s/%d/%s?expires=%d&sig=%s", s.PublicURL, url.PathEscape(torrentID), fileID, escapePath(asset), expiresUnix, sig)
+}
+
+func (s *Signer) VerifyHLSAsset(torrentID string, fileID int, asset string, expiresUnix int64, sig string) bool {
+	if time.Now().Unix() > expiresUnix {
+		return false
+	}
+	expected := s.signHLSPayload(torrentID, fileID, asset, expiresUnix)
+	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
+func (s *Signer) signHLSPayload(torrentID string, fileID int, asset string, expiresUnix int64) string {
+	payload := fmt.Sprintf("hls|%s|%d|%s|%d", torrentID, fileID, asset, expiresUnix)
+	mac := hmac.New(sha256.New, []byte(s.Secret))
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func escapePath(p string) string {
+	parts := strings.Split(p, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return strings.Join(parts, "/")
+}
+
 func NewLinkID() string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 	return strings.ToUpper(hex.EncodeToString(sum[:6]))

@@ -101,9 +101,10 @@ func (m *Manager) torrentDataDirs(rec *storage.TorrentRecord) []string {
 }
 
 func (m *Manager) removeTorrentData(ctx context.Context, rec *storage.TorrentRecord) {
+	store, err := m.objectStoreForSettings()
 	for _, f := range rec.Files {
-		if f.RemoteStored && f.ObjectKey != "" && m.objectStore != nil && m.objectStore.Enabled() {
-			_ = m.objectStore.Delete(ctx, f.ObjectKey)
+		if err == nil && f.RemoteStored && f.ObjectKey != "" && store != nil && store.Enabled() {
+			_ = store.Delete(ctx, f.ObjectKey)
 		}
 	}
 	for _, dir := range m.torrentDataDirs(rec) {

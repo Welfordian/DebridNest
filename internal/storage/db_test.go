@@ -1,0 +1,170 @@
+package storage
+
+import (
+	"database/sql"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+func TestOpenRunsMigrationsOnce(t *testing.T) {
+	dir := t.TempDir()
+	want := migrationNames(t)
+
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open fresh db: %v", err)
+	}
+	assertRecordedMigrations(t, db, want)
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fresh db: %v", err)
+	}
+
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatalf("reopen migrated db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	assertRecordedMigrations(t, db, want)
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+}
+
+func TestOpenBootstrapsLegacyDatabaseWithObjectStorageColumns(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyDatabase(t, dir, "001_init.sql", "002_retention.sql", "003_admin.sql", "004_object_storage.sql")
+
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	assertRecordedMigrations(t, db, migrationNames(t))
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+}
+
+func TestOpenRepairsPartialLegacyObjectStorageMigration(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyDatabase(t, dir, "001_init.sql", "002_retention.sql", "003_admin.sql")
+
+	raw := openRawDB(t, dir)
+	if _, err := raw.Exec(`ALTER TABLE torrent_files ADD COLUMN object_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("seed partial object storage migration: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open partial legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	assertRecordedMigrations(t, db, migrationNames(t))
+	assertColumnsExist(t, db.DB, "torrent_files", "object_key", "remote_stored")
+}
+
+func seedLegacyDatabase(t *testing.T, dir string, names ...string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	raw := openRawDB(t, dir)
+	defer raw.Close()
+
+	for _, name := range names {
+		body, err := migrations.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := raw.Exec(string(body)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+	}
+}
+
+func openRawDB(t *testing.T, dir string) *sql.DB {
+	t.Helper()
+
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "debridnest.db")+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	return raw
+}
+
+func migrationNames(t *testing.T) []string {
+	t.Helper()
+
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func assertRecordedMigrations(t *testing.T, db *DB, want []string) {
+	t.Helper()
+
+	rows, err := db.Query(`SELECT filename FROM schema_migrations ORDER BY filename`)
+	if err != nil {
+		t.Fatalf("read schema_migrations: %v", err)
+	}
+	defer rows.Close()
+
+	var got []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan schema_migrations: %v", err)
+		}
+		got = append(got, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate schema_migrations: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema_migrations = %v, want %v", got, want)
+	}
+}
+
+func assertColumnsExist(t *testing.T, db *sql.DB, table string, columns ...string) {
+	t.Helper()
+
+	rows, err := db.Query(`PRAGMA table_info(` + quoteSQLiteIdentifier(table) + `)`)
+	if err != nil {
+		t.Fatalf("read %s columns: %v", table, err)
+	}
+	defer rows.Close()
+
+	got := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, pk int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan %s columns: %v", table, err)
+		}
+		got[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s columns: %v", table, err)
+	}
+	for _, column := range columns {
+		if !got[column] {
+			t.Fatalf("%s.%s column missing; columns=%v", table, column, got)
+		}
+	}
+}
