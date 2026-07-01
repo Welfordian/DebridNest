@@ -25,7 +25,7 @@ Usenet uses SSL to your provider (port 563), not BitTorrent. The `vpn` profile r
 
 ## Requirements
 
-1. **Usenet provider account** (Newshosting, UsenetExpress, Frugal, etc.) — NZBFinder is only an **indexer**, not a download provider.
+1. **Usenet provider account** (Eweka, Newshosting, UsenetExpress, Frugal, etc.) — NZBFinder is only an **indexer**, not a download provider.
 2. **NZBGet** configured with provider credentials in `deploy/nzbget/nzbget.conf` or the NZBGet web UI.
 3. **Indexer API key** (e.g. NZBFinder) for Stremio search.
 
@@ -100,10 +100,44 @@ When `USENET_ENABLED=1` and `NEWZNAB_API_KEY` are set, the addon searches both J
 | S3 offload after complete | Yes | Yes |
 | Retention / quota | Yes | Yes (same torrent record) |
 
+## Eweka provider setup
+
+The repo ships with Eweka as the default news server in `deploy/nzbget/nzbget.conf`:
+
+| Setting | Value |
+|---------|-------|
+| Host | `news.eweka.nl` |
+| Port | `563` (SSL) or `119` (non-SSL) |
+| Encryption | Yes (port 563) |
+| Connections | 50 |
+
+**Do not commit real credentials.** Add your Eweka login after deploy using one of:
+
+### Option A — NZBGet web UI (recommended)
+
+1. Open `http://<VPS-IP>:6789` (default control login: `nzbget` / `tegbzn6789`).
+2. Go to **Settings → News-Servers → Eweka**.
+3. Enter **Username** and **Password** from your [Eweka account dashboard](https://account.eweka.nl) (Account → Usenet server access).
+4. Click **Test Connection** — expect success once credentials are correct.
+5. Click **Save all changes**.
+
+### Option B — Edit config on the VPS
+
+1. SSH to the VPS and edit `deploy/nzbget/nzbget.conf` (or the merged file under the `nzbget-config` Docker volume if already booted).
+2. Set `Server1.Username` and `Server1.Password`.
+3. Restart NZBGet: `docker compose --profile vpn --profile usenet restart nzbget-vpn` (or `nzbget` without VPN).
+
+### Test connection
+
+After saving credentials:
+
+1. In NZBGet UI: **Settings → News-Servers → Eweka → Test Connection**.
+2. Or submit a small NZB via DebridNest `POST /rest/1.0/torrents/addNzb` and confirm progress in **History**.
+
 ## VPS setup checklist
 
 1. SSH to VPS, edit `.env` with NZBGet and Newznab vars above.
-2. Edit `deploy/nzbget/nzbget.conf` — set **Usenet provider** Host, Username, Password (not NZBFinder).
+2. Confirm `deploy/nzbget/nzbget.conf` has the correct **Usenet provider** host (Eweka: `news.eweka.nl`). Add username/password via web UI (see above).
 3. `docker compose --profile vpn --profile stremio --profile usenet up -d --build`
-4. Open NZBGet UI (`http://VPS:6789`), verify provider connection test passes.
+4. Open NZBGet UI (`http://VPS:6789`), add Eweka credentials, verify **Test Connection** passes.
 5. Reinstall/configure Stremio addon; Usenet streams should appear alongside torrents.
