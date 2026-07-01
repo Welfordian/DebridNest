@@ -103,17 +103,68 @@ function rankTorrents(torrents, meta, maxResults = 5, qualityConfig = {}) {
     .slice(0, maxResults)
 }
 
+const DISPLAY_TITLE_MAX = 80
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0)
+  if (size <= 0) {
+    return null
+  }
+  const gb = size / (1024 ** 3)
+  if (gb >= 100) {
+    return `${Math.round(gb)} GB`
+  }
+  if (gb >= 10) {
+    return `${gb.toFixed(1)} GB`
+  }
+  return `${gb.toFixed(2)} GB`
+}
+
+function formatDisplayTitle(title) {
+  let text = String(title || 'Unknown').trim()
+  text = text.replace(/^\[[^\]]+\]\s*/, '')
+  if (text.length <= DISPLAY_TITLE_MAX) {
+    return text
+  }
+  return `${text.slice(0, DISPLAY_TITLE_MAX - 3)}...`
+}
+
+function formatStreamMetadata(entry) {
+  const { torrent } = entry
+  const parts = [`👤 ${Number(torrent.seeders || 0)}`]
+  const sizeLabel = formatFileSize(torrent.size)
+  if (sizeLabel) {
+    parts.push(`💾 ${sizeLabel}`)
+  }
+  const provider = torrent.indexer || null
+  if (provider) {
+    parts.push(`⚙️ ${provider}`)
+  }
+  return parts.join('  ')
+}
+
+function formatStreamName(entry, cached = false) {
+  const tags = quality.formatQualityTags(entry.torrent.title, entry.source)
+  const prefix = cached ? '⚡' : '⏳'
+  return tags ? `${prefix} ${tags}` : prefix
+}
+
+function formatStreamDisplay(entry, options = {}) {
+  const { cached = false } = options
+  return {
+    name: formatStreamName(entry, cached),
+    title: formatDisplayTitle(entry.torrent.title),
+    description: formatStreamMetadata(entry),
+  }
+}
+
 function formatStreamLabel(entry, cached = false) {
-  const { torrent, quality: parsedQuality, source } = entry
-  const seeders = torrent.seeders ? ` (${torrent.seeders} seeders)` : ''
-  const hdr = quality.formatHdrLabel(torrent.title)
-  const prefix = cached ? 'DebridNest ⚡' : 'DebridNest'
-  return `${prefix} ${parsedQuality.label}${hdr} ${source}${cached ? ' (cached)' : ''}${seeders}`
+  const display = formatStreamDisplay(entry, { cached })
+  return display.name
 }
 
 function formatPlaceholderLabel(entry) {
-  const { quality, source } = entry
-  return `DebridNest ⏳ ${quality.label} ${source} (stream)`
+  return formatStreamName(entry, false)
 }
 
 function applyCachePriority(ranked, availability) {
@@ -141,6 +192,7 @@ function isEntryCached(entry, availability) {
 
 module.exports = {
   rankTorrents,
+  formatStreamDisplay,
   formatStreamLabel,
   formatPlaceholderLabel,
   applyCachePriority,

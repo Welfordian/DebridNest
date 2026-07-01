@@ -300,9 +300,8 @@ function landingTemplate(manifest) {
 			</div>
 			<div class="web-install">
 				<h3>External player (IINA on macOS)</h3>
-				<p>When Stremio playback fails or HDR causes issues, open streams in <a href="https://iina.io/" target="_blank" rel="noopener">IINA</a>. Each resolved stream includes an <code>IINA:</code> link in its description.</p>
-				<p class="hint">After picking a stream, copy the IINA link from the stream title or visit <code>/open/&lt;streamId&gt;</code> on this addon. Use <strong>Open in IINA</strong> or copy the <code>iina://weblink?url=...</code> URL.</p>
-				<p class="hint">Direct format: append <code>?format=iina</code> to redirect to IINA.</p>
+				<p>When Stremio playback fails or HDR causes issues, open streams in <a href="https://iina.io/" target="_blank" rel="noopener">IINA</a>. Use the external player action on a stream, or visit <code>/open/&lt;streamId&gt;</code> on this addon.</p>
+				<p class="hint">After picking a stream, use <strong>Open in IINA</strong> from the player menu or append <code>?format=iina</code> to the open URL for a direct <code>iina://weblink?url=...</code> redirect.</p>
 			</div>
 			`
     : ''

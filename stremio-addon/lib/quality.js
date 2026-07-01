@@ -116,6 +116,33 @@ function formatHdrLabel(title) {
   return ' HDR'
 }
 
+function formatHdrTag(title) {
+  const profile = parseHdrProfile(title)
+  if (profile === 'sdr') {
+    return ''
+  }
+  if (profile === 'dv') {
+    return 'DV'
+  }
+  if (profile === 'hdr10plus') {
+    return 'HDR10+'
+  }
+  return 'HDR'
+}
+
+function formatQualityTags(title, source) {
+  const q = parseQuality(title)
+  const hdr = formatHdrTag(title)
+  const parts = [q.label]
+  if (hdr) {
+    parts.push(hdr)
+  }
+  if (source && source !== 'Unknown') {
+    parts.push(source)
+  }
+  return parts.join(' ')
+}
+
 module.exports = {
   parseQuality,
   parseHdrProfile,
@@ -126,4 +153,6 @@ module.exports = {
   passesQualityFilters,
   hdrScoreAdjustment,
   formatHdrLabel,
+  formatHdrTag,
+  formatQualityTags,
 }

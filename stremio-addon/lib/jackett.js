@@ -1,16 +1,33 @@
 const { XMLParser } = require('fast-xml-parser')
 
+const JACKETT_TIMEOUT_MS = Number(process.env.JACKETT_TIMEOUT_MS || 12000)
+
 function normalizeBaseUrl(url) {
   return String(url || '').replace(/\/+$/, '')
+}
+
+function extractIndexerFromTitle(title) {
+  const match = String(title || '').match(/^\[([^\]]+)\]/)
+  return match ? match[1].trim() : null
+}
+
+function parseIndexer(attrs) {
+  return findAttr(attrs, 'jackett indexer')
+    || findAttr(attrs, 'indexer')
+    || extractIndexerFromTitle(attrs.title)
+    || null
 }
 
 function parseTorznabItem(item) {
   const attrs = item || {}
   const title = attrs.title || ''
   const link = attrs.link || attrs.guid || ''
-  const size = Number(attrs.size || attrs['@_size'] || 0)
-  const seeders = Number(attrs.seeders || attrs['@_seeders'] || 0)
-  const peers = Number(attrs.peers || attrs['@_peers'] || 0)
+  const size = Number(attrs.size || attrs['@_size'] || findAttr(attrs, 'size') || 0)
+  const seeders = Number(
+    attrs.seeders || attrs['@_seeders'] || findAttr(attrs, 'seeders') || 0,
+  )
+  const peers = Number(attrs.peers || attrs['@_peers'] || findAttr(attrs, 'peers') || 0)
+  const leechers = Number(attrs.leechers || attrs['@_leechers'] || findAttr(attrs, 'leechers') || 0)
   const magnet = attrs.magneturl || attrs['torznab:attr']?.find?.((a) => a['@_name'] === 'magneturl')?.['@_value']
     || extractMagnetFromAttrs(attrs)
     || (String(link).startsWith('magnet:') ? link : null)
@@ -23,8 +40,9 @@ function parseTorznabItem(item) {
     magnet,
     infoHash: infoHash ? infoHash.toLowerCase() : null,
     size,
-    seeders: seeders || Math.max(0, peers - Number(attrs.leechers || 0)),
-    leechers: Number(attrs.leechers || attrs['@_leechers'] || 0),
+    seeders: seeders || Math.max(0, peers - leechers),
+    leechers,
+    indexer: parseIndexer(attrs),
     link,
   }
 }
@@ -126,7 +144,9 @@ function torznabUrl(baseUrl, apiKey, meta, options = {}) {
 
 async function fetchTorznab(jackettUrl, jackettApiKey, meta, options) {
   const url = torznabUrl(jackettUrl, jackettApiKey, meta, options)
-  const res = await fetch(url)
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(JACKETT_TIMEOUT_MS),
+  })
   const body = await res.text()
 
   if (!res.ok) {
