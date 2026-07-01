@@ -14,6 +14,9 @@ services:
       DEBRIDNEST_STREAM_READAHEAD_MB: "32"
       DEBRIDNEST_SEEK_READAHEAD_MB: "64"
       DEBRIDNEST_SEEK_PREROLL_MB: "8"
+      DEBRIDNEST_NZBGET_URL: ${DEBRIDNEST_NZBGET_URL:-http://nzbget:6789}
+      DEBRIDNEST_NZBGET_USER: ${DEBRIDNEST_NZBGET_USER:-nzbget}
+      DEBRIDNEST_NZBGET_PASS: ${DEBRIDNEST_NZBGET_PASS:-tegbzn6789}
     volumes:
       - debridnest-data:/data
     restart: unless-stopped
@@ -135,6 +138,9 @@ services:
       JACKETT_URL: ${JACKETT_URL:-http://jackett:9117}
       JACKETT_API_KEY: ${JACKETT_API_KEY:-}
       JACKETT_CONFIG_FILE: /jackett-config/Jackett/ServerConfig.json
+      NEWZNAB_URL: ${NEWZNAB_URL:-https://nzbfinder.ws/api}
+      NEWZNAB_API_KEY: ${NEWZNAB_API_KEY:-}
+      USENET_ENABLED: ${USENET_ENABLED:-0}
       PORT: "7001"
       MAX_RESULTS: "20"
       PREFER_SDR: ${PREFER_SDR:-0}
@@ -156,6 +162,38 @@ services:
         condition: service_started
       jackett-setup:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  nzbget:
+    profiles: ["usenet", "stremio"]
+    image: lscr.io/linuxserver/nzbget:latest
+    ports:
+      - "6789:6789"
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-UTC}
+    volumes:
+      - nzbget-config:/config
+      - debridnest-data:/data
+      - ./deploy/nzbget/nzbget.conf:/config/nzbget.conf:ro
+    restart: unless-stopped
+
+  nzbget-vpn:
+    profiles: ["vpn", "usenet"]
+    image: lscr.io/linuxserver/nzbget:latest
+    network_mode: "service:gluetun"
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-UTC}
+    volumes:
+      - nzbget-config:/config
+      - debridnest-data:/data
+      - ./deploy/nzbget/nzbget.conf:/config/nzbget.conf:ro
+    depends_on:
+      gluetun:
+        condition: service_healthy
     restart: unless-stopped
 
   gluetun:
@@ -204,6 +242,9 @@ services:
       DEBRIDNEST_STREAM_READAHEAD_MB: "32"
       DEBRIDNEST_SEEK_READAHEAD_MB: "64"
       DEBRIDNEST_SEEK_PREROLL_MB: "8"
+      DEBRIDNEST_NZBGET_URL: ${DEBRIDNEST_NZBGET_URL_VPN:-http://127.0.0.1:6789}
+      DEBRIDNEST_NZBGET_USER: ${DEBRIDNEST_NZBGET_USER:-nzbget}
+      DEBRIDNEST_NZBGET_PASS: ${DEBRIDNEST_NZBGET_PASS:-tegbzn6789}
     volumes:
       - debridnest-data:/data
     depends_on:
@@ -214,5 +255,6 @@ services:
 volumes:
   debridnest-data:
   jackett-config:
+  nzbget-config:
   caddy-data:
   caddy-config:

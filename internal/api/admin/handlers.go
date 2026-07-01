@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -54,6 +55,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/torrents/{id}", h.getTorrent)
 	r.Post("/torrents/add", h.addMagnet)
 	r.Post("/torrents/upload", h.uploadTorrent)
+	r.Post("/torrents/add-nzb", h.addNzb)
 	r.Get("/settings", h.getSettings)
 
 	r.Group(func(r chi.Router) {
@@ -254,6 +256,33 @@ func (h *Handler) uploadTorrent(w http.ResponseWriter, r *http.Request) {
 		"torrentId": rec.ID,
 		"name":      rec.Name,
 	})
+	writeJSON(w, http.StatusCreated, torrentSummary(rec))
+}
+
+func (h *Handler) addNzb(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL  string `json:"url"`
+		NZB  string `json:"nzb"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	nzbURL := strings.TrimSpace(body.URL)
+	if nzbURL == "" {
+		nzbURL = strings.TrimSpace(body.NZB)
+	}
+	if nzbURL == "" {
+		writeError(w, http.StatusBadRequest, "url required")
+		return
+	}
+
+	rec, err := h.manager.AddNZB(r.Context(), nzbURL, body.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusCreated, torrentSummary(rec))
 }
 

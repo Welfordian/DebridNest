@@ -19,6 +19,7 @@ import (
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/diskusage"
 	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/nzbget"
 	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
@@ -42,6 +43,8 @@ type Manager struct {
 	diskMu     sync.RWMutex
 	diskUsed   int64
 	diskUsedAt time.Time
+
+	nzbget *nzbget.Client
 }
 
 type Hooks struct {
@@ -120,10 +123,20 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, setting
 		objectStore:    objectStore,
 	}
 
+	if cfg.NZBGetURL != "" {
+		nzbClient, err := nzbget.New(cfg.NZBGetURL, cfg.NZBGetUser, cfg.NZBGetPass)
+		if err != nil {
+			client.Close()
+			return nil, fmt.Errorf("nzbget: %w", err)
+		}
+		m.nzbget = nzbClient
+	}
+
 	if err := m.resumeIncomplete(context.Background()); err != nil {
 		client.Close()
 		return nil, err
 	}
+	m.resumeNZBJobs(context.Background())
 
 	m.reconcileOrphanFiles(context.Background())
 	m.reconcileDiskUsage(true)
@@ -244,6 +257,7 @@ func (m *Manager) Delete(ctx context.Context, torrentID string) error {
 		return err
 	}
 
+	m.cancelNZBJob(ctx, rec)
 	m.stopTorrent(torrentID, rec.InfoHash, rec.Magnet)
 	m.removeTorrentData(ctx, rec)
 	m.invalidateDiskUsed()
@@ -687,6 +701,14 @@ func (m *Manager) applySelection(torrentID string, t *torrent.Torrent, files []s
 }
 
 func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecord) {
+	if isNZBRecord(rec) {
+		m.refreshNZBProgress(ctx, rec)
+		if rec.Status == "downloaded" {
+			m.refreshStreamLinks(ctx, rec)
+		}
+		return
+	}
+
 	m.mu.RLock()
 	rt := m.active[rec.ID]
 	m.mu.RUnlock()
@@ -815,6 +837,9 @@ func (m *Manager) resumeIncomplete(ctx context.Context) error {
 	}
 	now := time.Now()
 	for _, rec := range items {
+		if isNZBRecord(&rec) {
+			continue
+		}
 		if m.reconcileStaleMagnetConversion(ctx, rec, now) {
 			continue
 		}
@@ -824,6 +849,18 @@ func (m *Manager) resumeIncomplete(ctx context.Context) error {
 }
 
 func (m *Manager) resumeOne(rec storage.TorrentRecord) {
+	if isNZBRecord(&rec) {
+		meta := parseNZBMeta(rec.InfoBytes)
+		if meta.NZBID > 0 {
+			go m.trackNZBJob(rec.ID, meta.NZBID)
+			return
+		}
+		if meta.NZBURL != "" {
+			go m.processNZB(rec.ID, meta.NZBURL, rec.Name)
+		}
+		return
+	}
+
 	ctx := context.Background()
 	if rec.InfoHash == "" {
 		if ih, err := infoHashFromMagnet(rec.Magnet); err == nil && ih != "" {
