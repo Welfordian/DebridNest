@@ -28,9 +28,8 @@ const DEFAULT_MAX_FILE_SIZE_GB = process.env.MAX_FILE_SIZE_GB || '0'
 const DEFAULT_DEDUPE_STREAMS = process.env.DEDUPE_STREAMS !== '0'
 const DEFAULT_PREFER_SEASON_PACKS = process.env.PREFER_SEASON_PACKS === '1'
 const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 10)
-const LIST_RESOLVE_COUNT = Number(process.env.LIST_RESOLVE_COUNT || 2)
+const LIST_RESOLVE_COUNT = Number(process.env.LIST_RESOLVE_COUNT || 0)
 const CACHED_RESOLVE_WAIT_MS = Number(process.env.CACHED_RESOLVE_WAIT_MS || 8000)
-const STREAM_RESOLVE_WAIT_MS = Number(process.env.STREAM_RESOLVE_WAIT_MS || 10000)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
@@ -227,7 +226,7 @@ function requireConfig(config) {
 
 const manifest = {
   id: 'com.debridnest.streams',
-  version: '3.1.11',
+  version: '3.1.12',
   name: 'DebridNest Streams',
   description: 'Stream movies and series via Jackett/Prowlarr and your self-hosted DebridNest debrid server.',
   resources: [
@@ -408,7 +407,7 @@ builder.defineStreamHandler(async (args) => {
     const cached = rank.isEntryCached(entry, availability)
     let resolved = null
 
-    if (resolvedCount < LIST_RESOLVE_COUNT && (entry.torrent.magnet || entry.torrent.link)) {
+    if (cached && resolvedCount < LIST_RESOLVE_COUNT && (entry.torrent.magnet || entry.torrent.link)) {
       const candidateOpts = {
         maxWaitMs: CACHED_RESOLVE_WAIT_MS,
         torrentLink: entry.torrent.link,
@@ -422,20 +421,6 @@ builder.defineStreamHandler(async (args) => {
         )
       } catch {
         resolved = null
-      }
-
-      // Only block on a full quick-resolve for the first ranked pick when nothing is cached yet.
-      if (!resolved && resolvedCount === 0 && streams.length === 0 && placeholderCandidates.length === 0) {
-        try {
-          resolved = await debridnest.resolveStreamableQuick(
-            config.apiUrl,
-            config.apiToken,
-            entry.torrent.magnet,
-            { ...candidateOpts, maxWaitMs: STREAM_RESOLVE_WAIT_MS },
-          )
-        } catch {
-          resolved = null
-        }
       }
     }
 

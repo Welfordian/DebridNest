@@ -158,6 +158,8 @@ Cached streams show a ⚡ label; uncached show ⏳ while DebridNest downloads. S
 
 First play may take minutes while DebridNest downloads the torrent.
 
+Stream listing is non-blocking by default: opening Stremio's Streams tab searches Jackett and returns placeholder streams without adding magnets to DebridNest. The selected stream starts the DebridNest download. Set `LIST_RESOLVE_COUNT` above `0` only if you intentionally want the addon to pre-resolve already-cached DebridNest items into direct URLs while listing.
+
 Set `ADDON_BASE_URL` to a URL reachable by Stremio when using downloading placeholders remotely (e.g. `https://addon.example.com`).
 
 ## Local Node.js addon (without Docker Jackett)

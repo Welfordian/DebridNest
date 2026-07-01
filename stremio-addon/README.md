@@ -29,6 +29,8 @@ See [../docs/stremio-setup.md](../docs/stremio-setup.md) for full instructions.
 docker compose --profile stremio up -d
 ```
 
+By default, stream listing does not add magnets to DebridNest. Selecting a stream starts the download. Set `LIST_RESOLVE_COUNT` above `0` only to pre-resolve already-cached DebridNest items while listing.
+
 ## Debug
 
 - `GET /health` — verify DebridNest API auth
