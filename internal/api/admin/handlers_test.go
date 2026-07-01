@@ -337,3 +337,92 @@ func TestMultiUserCRUD(t *testing.T) {
 		t.Fatalf("delete status = %d, body = %s", delRec.Code, delRec.Body.String())
 	}
 }
+
+func TestGetSettingsRedaction(t *testing.T) {
+	cfg := testConfig()
+	cfg.MultiUserEnabled = true
+	authSvc, settingsStore, activitySvc, db := newTestServices(t, cfg)
+	h := NewHandler(cfg, nil, nil, activitySvc, settingsStore, authSvc)
+	ctx := context.Background()
+
+	_, err := settingsStore.Patch(ctx, map[string]any{
+		"webhookDiscordUrl":   "https://discord.example/secret-hook",
+		"webhookGotifyUrl":    "https://gotify.example/message?token=abc",
+		"webhookGotifyToken":  "super-secret",
+		"webhookNtfyTopic":    "my-private-topic",
+	})
+	if err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	_, token, err := authSvc.CreateUser(ctx, "reader", "user")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	adminReq.Header.Set("Authorization", authHeader(cfg.APIToken))
+	adminRec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(adminRec, adminReq)
+	if adminRec.Code != http.StatusOK {
+		t.Fatalf("admin settings status = %d", adminRec.Code)
+	}
+	var adminResp map[string]any
+	if err := json.Unmarshal(adminRec.Body.Bytes(), &adminResp); err != nil {
+		t.Fatalf("decode admin: %v", err)
+	}
+	if adminResp["webhookGotifyToken"] != "super-secret" {
+		t.Fatalf("admin token = %v", adminResp["webhookGotifyToken"])
+	}
+
+	userReq := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	userReq.Header.Set("Authorization", authHeader(token))
+	userRec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(userRec, userReq)
+	if userRec.Code != http.StatusOK {
+		t.Fatalf("user settings status = %d", userRec.Code)
+	}
+	var userResp map[string]any
+	if err := json.Unmarshal(userRec.Body.Bytes(), &userResp); err != nil {
+		t.Fatalf("decode user: %v", err)
+	}
+	if userResp["webhookGotifyToken"] != "" {
+		t.Fatalf("non-admin got token = %v", userResp["webhookGotifyToken"])
+	}
+	if userResp["webhookDiscordUrl"] != "(configured)" {
+		t.Fatalf("non-admin discord url = %v", userResp["webhookDiscordUrl"])
+	}
+	_ = db
+}
+
+func TestDeleteSelfRejected(t *testing.T) {
+	cfg := testConfig()
+	cfg.MultiUserEnabled = true
+	authSvc, settingsStore, activitySvc, _ := newTestServices(t, cfg)
+	h := NewHandler(cfg, nil, nil, activitySvc, settingsStore, authSvc)
+	ctx := context.Background()
+
+	_, adminToken, err := authSvc.CreateUser(ctx, "admin2", "admin")
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	users, err := authSvc.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var selfID string
+	for _, u := range users {
+		if u.Name == "admin2" {
+			selfID = u.ID
+			break
+		}
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/users/"+selfID, nil)
+	delReq.Header.Set("Authorization", authHeader(adminToken))
+	delRec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusBadRequest {
+		t.Fatalf("self-delete status = %d, body = %s", delRec.Code, delRec.Body.String())
+	}
+}

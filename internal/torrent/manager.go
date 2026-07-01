@@ -32,6 +32,10 @@ type Manager struct {
 	filesDir string
 	hooks    *Hooks
 	settings *settings.Store
+
+	diskMu     sync.RWMutex
+	diskUsed   int64
+	diskUsedAt time.Time
 }
 
 type Hooks struct {
@@ -101,6 +105,7 @@ func NewManager(cfg config.Config, db *storage.DB, signer *links.Signer, setting
 		return nil, err
 	}
 
+	m.reconcileDiskUsage(true)
 	go m.backgroundLoop()
 	return m, nil
 }
@@ -220,6 +225,7 @@ func (m *Manager) Delete(ctx context.Context, torrentID string) error {
 
 	dir := filepath.Join(m.filesDir, rec.InfoHash)
 	_ = os.RemoveAll(dir)
+	m.invalidateDiskUsed()
 	return m.db.DeleteTorrent(ctx, torrentID)
 }
 
@@ -325,13 +331,26 @@ func (m *Manager) ListDownloads(ctx context.Context, limit int) ([]storage.Downl
 func (m *Manager) InstantAvailability(ctx context.Context, hashes []string) map[string]map[string][]string {
 	out := make(map[string]map[string][]string)
 	const hostKey = "real-debrid.com" // API compatibility only; not affiliated with Real-Debrid
+
+	normalized := make([]string, 0, len(hashes))
 	for _, raw := range hashes {
 		hash := normalizeInfoHash(raw)
-		if hash == "" {
-			continue
+		if hash != "" {
+			normalized = append(normalized, hash)
 		}
-		rec, err := m.db.GetTorrentByHash(ctx, hash)
-		if err != nil || (rec.Status != "downloaded" && !m.isStreamable(rec)) {
+	}
+	if len(normalized) == 0 {
+		return out
+	}
+
+	byHash, err := m.db.GetTorrentsByHashes(ctx, normalized)
+	if err != nil {
+		return out
+	}
+
+	for _, hash := range normalized {
+		rec, ok := byHash[hash]
+		if !ok || (rec.Status != "downloaded" && !m.isStreamable(rec)) {
 			continue
 		}
 		m.ensureHostLinks(ctx, rec)
@@ -470,6 +489,8 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 
 	var lastBytes int64
 	var lastAt time.Time
+	var lastPersistAt time.Time
+	var lastPersistProgress int
 
 	for {
 		select {
@@ -479,11 +500,13 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 				return
 			}
 
-			m.syncRuntimeFiles(t, rec)
-			completed := m.selectedCompleted(rec)
-			total := m.selectedTotal(rec)
-			if total > 0 {
-				rec.Progress = int(completed * 100 / total)
+			prevStatus := rec.Status
+			prevProgress := rec.Progress
+			prevFiles := cloneFileDownloaded(rec.Files)
+
+			m.syncRuntimeState(rec, t)
+			if rec.Status == "downloaded" || m.isStreamable(rec) {
+				m.refreshStreamLinks(ctx, rec)
 			}
 
 			stats := t.Stats()
@@ -498,22 +521,25 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 			}
 			lastBytes = currentBytes
 			lastAt = now
-			rec.Seeders = stats.ActivePeers
 
-			prevStatus := rec.Status
-			if completed >= total && total > 0 {
-				rec.Status = "downloaded"
-				rec.Progress = 100
-				now := time.Now().UTC()
-				rec.EndedAt = &now
-				m.refreshStreamLinks(ctx, rec)
-			} else if rec.Status == "queued" || rec.Status == "downloading" {
-				rec.Status = "downloading"
-				m.refreshStreamLinks(ctx, rec)
+			statusChanged := rec.Status != prevStatus
+			progressDelta := absInt(rec.Progress - lastPersistProgress)
+			if lastPersistAt.IsZero() {
+				progressDelta = absInt(rec.Progress - prevProgress)
 			}
+			filesChanged := filesDownloadedChanged(prevFiles, rec.Files)
+			shouldPersist := statusChanged ||
+				progressDelta >= 1 ||
+				filesChanged ||
+				lastPersistAt.IsZero() ||
+				now.Sub(lastPersistAt) >= 10*time.Second
 
-			_ = m.db.UpdateTorrentFiles(ctx, id, rec.Files)
-			_ = m.db.UpdateTorrent(ctx, *rec)
+			if shouldPersist {
+				_ = m.db.UpdateTorrentFiles(ctx, id, rec.Files)
+				_ = m.db.UpdateTorrent(ctx, *rec)
+				lastPersistAt = now
+				lastPersistProgress = rec.Progress
+			}
 
 			if rec.Status == "downloaded" {
 				if prevStatus != "downloaded" {
@@ -575,22 +601,52 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 	}
 
 	if rt.t.Info() == nil {
-		rec.Status = "magnet_conversion"
-		_ = m.db.UpdateTorrent(ctx, *rec)
+		if rec.Status != "magnet_conversion" {
+			rec.Status = "magnet_conversion"
+			_ = m.db.UpdateTorrent(ctx, *rec)
+		}
 		return
 	}
+
+	prevStatus := rec.Status
+	prevProgress := rec.Progress
+	prevFiles := cloneFileDownloaded(rec.Files)
 
 	if rec.InfoHash == "" {
 		rec.InfoHash = rt.t.InfoHash().HexString()
 	}
 
-	m.syncRuntimeFiles(rt.t, rec)
+	m.syncRuntimeState(rec, rt.t)
+
+	statusChanged := rec.Status != prevStatus
+	progressChanged := rec.Progress != prevProgress
+	filesChanged := filesDownloadedChanged(prevFiles, rec.Files)
+
+	if statusChanged || progressChanged || filesChanged {
+		if rec.Status == "downloaded" || m.isStreamable(rec) {
+			m.refreshStreamLinks(ctx, rec)
+		}
+		_ = m.db.UpdateTorrentFiles(ctx, rec.ID, rec.Files)
+		_ = m.db.UpdateTorrent(ctx, *rec)
+		if prevStatus != "downloaded" && rec.Status == "downloaded" {
+			m.fireDownloadComplete(rec.Name)
+		}
+	} else if rec.Status == "downloaded" || m.isStreamable(rec) {
+		m.refreshStreamLinks(ctx, rec)
+	}
+}
+
+func (m *Manager) syncRuntimeState(rec *storage.TorrentRecord, t *torrent.Torrent) {
+	if t.Info() == nil {
+		return
+	}
+
+	m.syncRuntimeFiles(t, rec)
 	total := m.selectedTotal(rec)
 	completed := m.selectedCompleted(rec)
 	if total > 0 {
 		rec.Progress = int(completed * 100 / total)
 	}
-	prevStatus := rec.Status
 	if completed >= total && total > 0 {
 		rec.Status = "downloaded"
 		rec.Progress = 100
@@ -598,18 +654,38 @@ func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecor
 			now := time.Now().UTC()
 			rec.EndedAt = &now
 		}
-		m.refreshStreamLinks(ctx, rec)
 	} else if rec.Status != "waiting_files_selection" && rec.Status != "magnet_conversion" {
 		rec.Status = "downloading"
-		m.refreshStreamLinks(ctx, rec)
 	}
-	stats := rt.t.Stats()
+	stats := t.Stats()
 	rec.Seeders = stats.ActivePeers
-	_ = m.db.UpdateTorrentFiles(ctx, rec.ID, rec.Files)
-	_ = m.db.UpdateTorrent(ctx, *rec)
-	if prevStatus != "downloaded" && rec.Status == "downloaded" {
-		m.fireDownloadComplete(rec.Name)
+}
+
+func cloneFileDownloaded(files []storage.TorrentFileRecord) []int64 {
+	out := make([]int64, len(files))
+	for i, f := range files {
+		out[i] = f.DownloadedBytes
 	}
+	return out
+}
+
+func filesDownloadedChanged(prev []int64, files []storage.TorrentFileRecord) bool {
+	if len(prev) != len(files) {
+		return true
+	}
+	for i, f := range files {
+		if prev[i] != f.DownloadedBytes {
+			return true
+		}
+	}
+	return false
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func (m *Manager) ensureHostLinks(ctx context.Context, rec *storage.TorrentRecord) {
@@ -688,24 +764,32 @@ func (m *Manager) replaceTorrentFiles(ctx context.Context, torrentID string, fil
 }
 
 func (m *Manager) backgroundLoop() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		ctx := context.Background()
-		items, err := m.db.ListIncompleteTorrents(ctx)
-		if err != nil {
-			continue
-		}
-		for _, rec := range items {
-			m.mu.RLock()
-			_, ok := m.active[rec.ID]
-			m.mu.RUnlock()
-			if !ok {
-				go m.resumeOne(rec)
+	diskTicker := time.NewTicker(60 * time.Second)
+	defer diskTicker.Stop()
+	loopTicker := time.NewTicker(10 * time.Second)
+	defer loopTicker.Stop()
+
+	for {
+		select {
+		case <-diskTicker.C:
+			m.reconcileDiskUsage(false)
+		case <-loopTicker.C:
+			ctx := context.Background()
+			items, err := m.db.ListIncompleteTorrents(ctx)
+			if err != nil {
+				continue
 			}
-		}
-		if m.cfg.SeedAfterComplete {
-			m.enforceSeedingLimits(ctx)
+			for _, rec := range items {
+				m.mu.RLock()
+				_, ok := m.active[rec.ID]
+				m.mu.RUnlock()
+				if !ok {
+					go m.resumeOne(rec)
+				}
+			}
+			if m.cfg.SeedAfterComplete {
+				m.enforceSeedingLimits(ctx)
+			}
 		}
 	}
 }
@@ -802,11 +886,41 @@ func (m *Manager) diskQuotaBytes() int64 {
 	return m.cfg.DiskQuotaBytes()
 }
 
-func (m *Manager) Stats(ctx context.Context) (Stats, error) {
+const diskUsageMaxStale = 60 * time.Second
+
+func (m *Manager) reconcileDiskUsage(force bool) {
+	m.diskMu.RLock()
+	stale := force || m.diskUsedAt.IsZero() || time.Since(m.diskUsedAt) > diskUsageMaxStale
+	m.diskMu.RUnlock()
+	if !stale {
+		return
+	}
+
 	used, err := diskusage.DirSize(m.filesDir)
 	if err != nil {
-		return Stats{}, err
+		return
 	}
+	m.diskMu.Lock()
+	m.diskUsed = used
+	m.diskUsedAt = time.Now()
+	m.diskMu.Unlock()
+}
+
+func (m *Manager) invalidateDiskUsed() {
+	m.diskMu.Lock()
+	m.diskUsedAt = time.Time{}
+	m.diskMu.Unlock()
+}
+
+func (m *Manager) cachedDiskUsed() int64 {
+	m.reconcileDiskUsage(false)
+	m.diskMu.RLock()
+	defer m.diskMu.RUnlock()
+	return m.diskUsed
+}
+
+func (m *Manager) Stats(ctx context.Context) (Stats, error) {
+	used := m.cachedDiskUsed()
 	total, err := m.db.CountTorrents(ctx)
 	if err != nil {
 		return Stats{}, err
@@ -848,6 +962,7 @@ func (m *Manager) DeleteCompletedBefore(ctx context.Context, before time.Time) (
 			removed++
 		}
 	}
+	m.invalidateDiskUsed()
 	return removed, nil
 }
 
@@ -874,6 +989,7 @@ func (m *Manager) EvictOldestCompleted(ctx context.Context, needBytes int64) (in
 			freed += size
 		}
 	}
+	m.invalidateDiskUsed()
 	return removed, nil
 }
 

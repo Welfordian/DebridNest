@@ -31,6 +31,42 @@ const PLACEHOLDER_COUNT = Number(process.env.PLACEHOLDER_COUNT || 2)
 const STREAM_RESOLVE_WAIT_MS = Number(process.env.STREAM_RESOLVE_WAIT_MS || 20000)
 const PROGRESS_POLL_MS = Number(process.env.PROGRESS_POLL_MS || 2000)
 const ENABLE_MAGNET_TEST = process.env.ENABLE_MAGNET_TEST === '1'
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
+
+const LOCAL_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
+function isLocalRequest(req) {
+  return LOCAL_IPS.has(req.ip || req.socket?.remoteAddress || '')
+}
+
+function requireLocalOrAdmin(req, res, next) {
+  if (isLocalRequest(req)) {
+    next()
+    return
+  }
+  const adminHeader = req.get('X-Admin-Token') || ''
+  if (ADMIN_TOKEN && adminHeader === ADMIN_TOKEN) {
+    next()
+    return
+  }
+  res.status(403).json({ error: 'Forbidden' })
+}
+
+function extractBearerToken(req) {
+  const auth = req.get('Authorization') || ''
+  const match = auth.match(/^Bearer\s+(.+)$/i)
+  return match ? match[1].trim() : ''
+}
+
+function getServerSideConfig(req) {
+  const bearerToken = extractBearerToken(req)
+  return {
+    apiUrl: DEFAULT_API_URL,
+    apiToken: bearerToken || DEFAULT_API_TOKEN,
+    jackettUrl: DEFAULT_JACKETT_URL,
+    jackettApiKey: DEFAULT_JACKETT_API_KEY,
+  }
+}
 
 function configValue(userValue, defaultValue) {
   if (userValue === undefined || userValue === null) {
@@ -384,10 +420,7 @@ async function resolveFromQuery(req) {
     err.status = 400
     throw err
   }
-  const config = getConfig({
-    apiUrl: req.query.apiUrl,
-    apiToken: req.query.apiToken,
-  })
+  const config = getServerSideConfig(req)
   requireDebridNestConfig(config)
   return debridnest.resolveMagnet(config.apiUrl, config.apiToken, magnet.trim())
 }
@@ -397,7 +430,8 @@ const app = express()
 const hasConfig = !!(addonInterface.manifest.config || []).length
 const landingHTML = landingTemplate(addonInterface.manifest)
 
-app.get('/resolve', async (req, res) => {
+// /resolve — localhost or X-Admin-Token only; DebridNest URL from env; token via Authorization Bearer.
+app.get('/resolve', requireLocalOrAdmin, async (req, res) => {
   try {
     const result = await resolveFromQuery(req)
     res.json(result)
@@ -487,13 +521,9 @@ app.get('/progress/:token', async (req, res) => {
   }
 })
 
-app.get('/diagnostics', async (req, res) => {
-  const config = getConfig({
-    apiUrl: req.query.apiUrl,
-    apiToken: req.query.apiToken,
-    jackettUrl: req.query.jackettUrl,
-    jackettApiKey: req.query.jackettApiKey,
-  })
+// /diagnostics — localhost or X-Admin-Token only; backend URLs/tokens from env; DebridNest token via Authorization Bearer.
+app.get('/diagnostics', requireLocalOrAdmin, async (req, res) => {
+  const config = getServerSideConfig(req)
 
   const result = {
     ok: true,
@@ -529,19 +559,13 @@ app.get('/diagnostics', async (req, res) => {
     }
   }
 
-  if (jackettConfig.isPlaceholderKey(req.query.jackettApiKey) && !jackettConfig.isPlaceholderKey(config.jackettApiKey)) {
-    result.hints.push('Manifest uses a placeholder Jackett key; empty field or reinstall recommended')
-  }
-
   res.json(result)
 })
 
-app.get('/health', async (req, res) => {
+// /health — localhost or X-Admin-Token only; DebridNest URL from env; token via Authorization Bearer.
+app.get('/health', requireLocalOrAdmin, async (req, res) => {
   try {
-    const config = getConfig({
-      apiUrl: req.query.apiUrl,
-      apiToken: req.query.apiToken,
-    })
+    const config = getServerSideConfig(req)
     requireDebridNestConfig(config)
     const user = await debridnest.getUser(config.apiUrl, config.apiToken)
     res.json({ ok: true, user: { username: user.username, type: user.type } })

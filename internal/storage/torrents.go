@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -171,6 +172,62 @@ func (db *DB) GetTorrentByHash(ctx context.Context, infoHash string) (*TorrentRe
 	return rec, nil
 }
 
+func (db *DB) GetTorrentsByHashes(ctx context.Context, hashes []string) (map[string]*TorrentRecord, error) {
+	out := make(map[string]*TorrentRecord)
+	if len(hashes) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(hashes))
+	args := make([]any, len(hashes))
+	for i, h := range hashes {
+		placeholders[i] = "?"
+		args[i] = h
+	}
+	query := `
+		SELECT id, info_hash, magnet, name, original_name, status, progress, bytes, original_bytes, info_bytes, added_at, ended_at, speed, seeders
+		FROM torrents WHERE info_hash IN (` + strings.Join(placeholders, ",") + `) ORDER BY added_at DESC`
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		rec, err := scanTorrentRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := out[rec.InfoHash]; exists {
+			continue
+		}
+		out[rec.InfoHash] = rec
+		ids = append(ids, rec.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	filesByTorrent, err := db.listTorrentFilesBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	linksByTorrent, err := db.listHostLinksBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range out {
+		rec.Files = filesByTorrent[rec.ID]
+		rec.Links = linksByTorrent[rec.ID]
+	}
+	return out, nil
+}
+
 func (db *DB) ListTorrents(ctx context.Context, limit int) ([]TorrentRecord, error) {
 	if limit <= 0 {
 		limit = 100
@@ -189,14 +246,27 @@ func (db *DB) ListTorrents(ctx context.Context, limit int) ([]TorrentRecord, err
 		if err != nil {
 			return nil, err
 		}
-		links, err := db.listHostLinks(ctx, rec.ID)
-		if err != nil {
-			return nil, err
-		}
-		rec.Links = links
 		out = append(out, *rec)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	ids := make([]string, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+	}
+	linksByTorrent, err := db.listHostLinksBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Links = linksByTorrent[out[i].ID]
+	}
+	return out, nil
 }
 
 func (db *DB) DeleteTorrent(ctx context.Context, id string) error {
@@ -315,25 +385,79 @@ func (db *DB) listTorrentFiles(ctx context.Context, torrentID string) ([]Torrent
 }
 
 func (db *DB) listHostLinks(ctx context.Context, torrentID string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT hl.id FROM host_links hl
+	m, err := db.listHostLinksBatch(ctx, []string{torrentID})
+	if err != nil {
+		return nil, err
+	}
+	return m[torrentID], nil
+}
+
+func (db *DB) listHostLinksBatch(ctx context.Context, torrentIDs []string) (map[string][]string, error) {
+	out := make(map[string][]string, len(torrentIDs))
+	if len(torrentIDs) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(torrentIDs))
+	args := make([]any, len(torrentIDs))
+	for i, id := range torrentIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `
+		SELECT hl.torrent_id, hl.id FROM host_links hl
 		JOIN torrent_files tf ON tf.torrent_id = hl.torrent_id AND tf.id = hl.file_id
-		WHERE hl.torrent_id = ? AND tf.selected = 1
-		ORDER BY tf.id ASC`, torrentID)
+		WHERE hl.torrent_id IN (` + strings.Join(placeholders, ",") + `) AND tf.selected = 1
+		ORDER BY hl.torrent_id ASC, tf.id ASC`
+
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var ids []string
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var torrentID, linkID string
+		if err := rows.Scan(&torrentID, &linkID); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		out[torrentID] = append(out[torrentID], linkID)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
+}
+
+func (db *DB) listTorrentFilesBatch(ctx context.Context, torrentIDs []string) (map[string][]TorrentFileRecord, error) {
+	out := make(map[string][]TorrentFileRecord, len(torrentIDs))
+	if len(torrentIDs) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(torrentIDs))
+	args := make([]any, len(torrentIDs))
+	for i, id := range torrentIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `
+		SELECT id, torrent_id, path, bytes, selected, downloaded_bytes, disk_path
+		FROM torrent_files WHERE torrent_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY torrent_id ASC, id ASC`
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var f TorrentFileRecord
+		var selected int
+		if err := rows.Scan(&f.ID, &f.TorrentID, &f.Path, &f.Bytes, &selected, &f.DownloadedBytes, &f.DiskPath); err != nil {
+			return nil, err
+		}
+		f.Selected = selected == 1
+		out[f.TorrentID] = append(out[f.TorrentID], f)
+	}
+	return out, rows.Err()
 }
 
 func scanTorrent(row *sql.Row) (*TorrentRecord, error) {

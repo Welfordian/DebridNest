@@ -8,6 +8,8 @@ DebridNest implements a **Stremio-focused subset** of [Real-Debrid REST v1.0](ht
 Authorization: Bearer <DEBRIDNEST_API_TOKEN>
 ```
 
+By default DebridNest runs in **multi-user mode** (`DEBRIDNEST_MULTI_USER=1`): users and per-user API tokens are stored in SQLite, and any valid user token works for RD-compatible routes. Set `DEBRIDNEST_MULTI_USER=0` for legacy single-token mode. See [operations.md](operations.md#multi-user-authentication) for user management, admin routes, and qBittorrent token login.
+
 Public routes (no token): `/d/{linkID}`, `/dl/{expires}/{path}/{sig}`
 
 WebDAV (Basic auth): `/webdav/` — see [webdav.md](webdav.md). Disabled with `DEBRIDNEST_WEBDAV_ENABLED=0`.

@@ -342,7 +342,8 @@ func (h *Handler) serveSigned(w http.ResponseWriter, r *http.Request, rawPath st
 		}()
 	}
 
-	http.ServeContent(out, r, filename, modTime, reader)
+	limited := h.rateLimiter.ReadSeekCloser(reader)
+	http.ServeContent(out, r, filename, modTime, limited)
 }
 
 func torrentInfoResponse(cfg config.Config, rec *storage.TorrentRecord) map[string]any {

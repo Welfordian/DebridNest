@@ -82,7 +82,7 @@ async function handleProgressRequest(req, res, job) {
     return
   }
 
-  // Redirect to DebridNest directly — avoids proxy hop and makes seeking fast.
+  // Redirect to DebridNest directly for fast seeking.
   res.redirect(302, downloadUrl)
 }
 

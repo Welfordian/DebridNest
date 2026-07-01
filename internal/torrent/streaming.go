@@ -50,10 +50,7 @@ func (m *Manager) LookupByRelativePath(ctx context.Context, relativePath string)
 	absPath := filepath.Join(m.filesDir, clean)
 	file, err := m.db.GetTorrentFileByDiskPath(ctx, absPath)
 	if err != nil {
-		file, err = m.db.GetTorrentFileByBasename(ctx, filepath.Base(clean))
-		if err != nil {
-			return nil, nil, err
-		}
+		return nil, nil, fmt.Errorf("file not found")
 	}
 
 	rec, err := m.Get(ctx, file.TorrentID)

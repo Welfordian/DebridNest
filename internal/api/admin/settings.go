@@ -3,6 +3,8 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/debridnest/debridnest/internal/auth"
 )
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -10,7 +12,12 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "settings not configured")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.settings.GetMerged())
+	user, ok := auth.UserFromContext(r.Context())
+	if ok && user.Admin {
+		writeJSON(w, http.StatusOK, h.settings.GetMerged())
+		return
+	}
+	writeJSON(w, http.StatusOK, h.settings.RedactForNonAdmin())
 }
 
 func (h *Handler) patchSettings(w http.ResponseWriter, r *http.Request) {

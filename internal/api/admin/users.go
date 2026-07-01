@@ -89,10 +89,17 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
+	if user, ok := auth.UserFromContext(r.Context()); ok && user.ID == id {
+		writeError(w, http.StatusBadRequest, auth.ErrSelfDelete.Error())
+		return
+	}
 	if err := h.auth.DeleteUser(r.Context(), id); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, auth.ErrUserNotFound) {
 			status = http.StatusNotFound
+		}
+		if errors.Is(err, auth.ErrLastAdmin) {
+			status = http.StatusConflict
 		}
 		writeError(w, status, err.Error())
 		return

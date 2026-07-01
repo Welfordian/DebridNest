@@ -57,16 +57,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm install
-      - run: node --check index.js
-      - run: node --check lib/debridnest.js
-      - run: node --check lib/jackett.js
-      - run: node --check lib/cinemeta.js
-      - run: node --check lib/rank.js
-      - run: node --check lib/scrapers.js
-      - run: node --check lib/progress.js
-      - run: node --check lib/progressHandler.js
-      - run: node --check lib/quality.js
-      - run: node --check lib/externalPlayer.js
-      - run: node --check lib/dedupe.js
-      - run: node --check lib/seasonPacks.js
+      - run: npm ci
+      - run: |
+          for f in lib/*.js index.js; do node --check "$f"; done

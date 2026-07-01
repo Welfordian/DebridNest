@@ -19,6 +19,8 @@ var (
 	ErrUserExists   = errors.New("user already exists")
 	ErrUserNotFound = errors.New("user not found")
 	ErrInvalidRole  = errors.New("invalid role")
+	ErrLastAdmin    = errors.New("cannot delete last admin")
+	ErrSelfDelete   = errors.New("cannot delete own account")
 )
 
 type User struct {
@@ -164,10 +166,31 @@ func (s *Service) ListUsers(ctx context.Context) ([]UserRecord, error) {
 	return out, rows.Err()
 }
 
+func (s *Service) CountAdmins(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&count)
+	return count, err
+}
+
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	if !s.multiUserEnabled {
 		return errors.New("multi-user disabled")
 	}
+
+	rec, err := s.getUserByID(ctx, id)
+	if err != nil {
+		return ErrUserNotFound
+	}
+	if rec.Role == "admin" {
+		count, err := s.CountAdmins(ctx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return ErrLastAdmin
+		}
+	}
+
 	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
 	if err != nil {
 		return err

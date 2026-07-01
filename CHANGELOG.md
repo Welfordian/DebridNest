@@ -28,7 +28,6 @@ All notable changes to DebridNest are summarized here by development phase.
 - Download rate limiting on signed `/dl/*` URLs
 - React dashboard at `/dashboard/` (overview + torrent management)
 - Stremio cache-first stream ordering and downloading placeholders
-- Optional Zilean scraper for additional indexers
 
 ## Phase 2 — Real Stremio playback and remote deploy
 

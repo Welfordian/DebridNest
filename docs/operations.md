@@ -15,9 +15,14 @@ Retention runs every 15 minutes. When quota is exceeded, oldest completed torren
 
 Open `http://localhost:8080/dashboard/` after starting DebridNest.
 
-1. Paste your `DEBRIDNEST_API_TOKEN` on first visit (stored in browser `localStorage`)
-2. **Overview** — disk usage, active downloads, aggregate speed
-3. **Torrents** — list, delete, retry failed jobs
+1. Paste your API token on first visit (stored in browser `localStorage`)
+2. **Overview** — disk usage, active downloads, aggregate speed, quick links to other tabs
+3. **Torrents** — list, add magnet, upload `.torrent`, delete, batch delete, retry failed jobs
+4. **Library** — browse completed files and copy download links
+5. **Settings** — retention, quota, rate limit, webhook URLs, notification toggles, maintenance cleanup, purge (admin)
+6. **Users** *(admin)* — create/delete users, rotate tokens
+7. **Activity** *(admin)* — audit log of admin and torrent actions
+8. **Logs** *(admin)* — recent server log lines
 
 ## Multi-user authentication
 
@@ -68,15 +73,47 @@ qBittorrent login (`/api/v2/auth/login`) accepts the legacy qBit username/passwo
 
 ## Admin API
 
-All routes require `Authorization: Bearer <DEBRIDNEST_API_TOKEN>`:
+All routes require `Authorization: Bearer <token>` (any valid user token in multi-user mode).
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/stats` | Disk and torrent statistics |
-| GET | `/api/v1/torrents` | Full torrent list |
-| DELETE | `/api/v1/torrents/{id}` | Delete torrent and files |
-| POST | `/api/v1/torrents/{id}/retry` | Re-queue failed torrent |
-| GET | `/api/v1/config` | Read-only config summary |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/me` | user | Current user profile (`name`, `role`, `admin`) |
+| GET | `/api/v1/system` | user | Server version, uptime, feature flags |
+| GET | `/api/v1/stats` | user | Disk and torrent statistics |
+| GET | `/api/v1/config` | user | Read-only config summary |
+| GET | `/api/v1/torrents` | user | Full torrent list (`?limit=`) |
+| GET | `/api/v1/torrents/{id}` | user | Torrent detail with files and links |
+| POST | `/api/v1/torrents/add` | user | Add magnet `{"magnet"}` |
+| POST | `/api/v1/torrents/upload` | user | Upload `.torrent` file (multipart field `torrent`) |
+| POST | `/api/v1/torrents/batch-delete` | user | Delete many `{"ids":["…"]}` |
+| DELETE | `/api/v1/torrents/{id}` | user | Delete torrent and files |
+| POST | `/api/v1/torrents/{id}/retry` | user | Re-queue failed torrent |
+| POST | `/api/v1/maintenance/cleanup` | user | Run retention/quota cleanup now |
+| GET | `/api/v1/settings` | user | Merged env defaults + runtime overrides |
+| POST | `/api/v1/torrents/purge` | admin | Purge by status filter `{"filter"}` |
+| PATCH | `/api/v1/settings` | admin | Update retention, quota, rate limit, webhooks |
+| GET | `/api/v1/activity` | admin | Audit log (`?limit=&offset=`) |
+| GET | `/api/v1/logs` | admin | Recent server log lines (`?limit=`) |
+
+User management routes (`/api/v1/users/*`) are documented in [Multi-user authentication](#multi-user-authentication) below.
+
+## Notifications and webhooks
+
+Configure via the dashboard **Settings** tab or `PATCH /api/v1/settings` (admin). Environment defaults can be set in `.env`:
+
+| Setting key | Env variable | Description |
+|-------------|--------------|-------------|
+| `webhookDiscordUrl` | `DEBRIDNEST_WEBHOOK_DISCORD_URL` | Discord incoming webhook URL |
+| `webhookNtfyTopic` | `DEBRIDNEST_WEBHOOK_NTFY_TOPIC` | ntfy.sh topic name |
+| `webhookGotifyUrl` | `DEBRIDNEST_WEBHOOK_GOTIFY_URL` | Gotify server base URL |
+| `webhookGotifyToken` | `DEBRIDNEST_WEBHOOK_GOTIFY_TOKEN` | Gotify app token |
+| `notifyOnDownloadComplete` | `DEBRIDNEST_NOTIFY_ON_DOWNLOAD_COMPLETE` | Notify when a torrent finishes downloading (default `true`) |
+| `notifyOnQuotaWarning` | `DEBRIDNEST_NOTIFY_ON_QUOTA_WARNING` | Notify when disk quota threshold is reached (default `true`) |
+
+When enabled, DebridNest posts to all configured webhook targets. Events:
+
+- **Download complete** — torrent reaches `downloaded` status
+- **Quota warning** — disk usage exceeds configured quota during retention checks
 
 ## Torrent file upload
 

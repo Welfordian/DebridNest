@@ -22,7 +22,7 @@ import (
 	"github.com/debridnest/debridnest/internal/torrent"
 )
 
-func setupRouter(t *testing.T, cfg config.Config) http.Handler {
+func setupRouter(t *testing.T, cfg config.Config, withMetrics bool) http.Handler {
 	t.Helper()
 
 	db, err := storage.Open(cfg.DataDir)
@@ -48,8 +48,11 @@ func setupRouter(t *testing.T, cfg config.Config) http.Handler {
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 
-	collector := metrics.New()
-	collector.StartStatsCollector(context.Background(), manager, time.Second)
+	var collector *metrics.Collector
+	if withMetrics {
+		collector = metrics.New()
+		collector.StartStatsCollector(context.Background(), manager, time.Second)
+	}
 
 	router, err := server.NewRouter(server.Options{
 		Config:   cfg,
@@ -82,7 +85,7 @@ func TestSmoke(t *testing.T) {
 		t.Fatalf("config: %v", err)
 	}
 
-	srv := httptest.NewServer(setupRouter(t, cfg))
+	srv := httptest.NewServer(setupRouter(t, cfg, true))
 	t.Cleanup(srv.Close)
 	client := srv.Client()
 
@@ -154,6 +157,92 @@ func TestSmoke(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestAddMagnetSelectFlow(t *testing.T) {
+	tmp := t.TempDir()
+	token := "integration-test-token"
+
+	t.Setenv("DEBRIDNEST_API_TOKEN", token)
+	t.Setenv("DEBRIDNEST_DATA_DIR", tmp)
+	t.Setenv("DEBRIDNEST_PUBLIC_URL", "http://127.0.0.1:8080")
+	t.Setenv("DEBRIDNEST_LISTEN", ":0")
+	t.Setenv("DEBRIDNEST_TORRENT_PORT", "0")
+	t.Setenv("DEBRIDNEST_AUTO_SELECT_SECONDS", "0")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	db, err := storage.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	torrentID := "SELECT001"
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	rec := storage.TorrentRecord{
+		ID:       torrentID,
+		InfoHash: hash,
+		Name:     "sample.mkv",
+		Status:   "waiting_files_selection",
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: torrentID, Path: "/sample.mkv", Bytes: 1000, DiskPath: "/tmp/sample.mkv"},
+			{ID: 2, TorrentID: torrentID, Path: "/sample.srt", Bytes: 100, DiskPath: "/tmp/sample.srt"},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("seed torrent: %v", err)
+	}
+
+	srv := httptest.NewServer(setupRouter(t, cfg, false))
+	t.Cleanup(srv.Close)
+
+	infoReq, err := http.NewRequest(http.MethodGet, srv.URL+"/rest/1.0/torrents/info/"+torrentID, nil)
+	if err != nil {
+		t.Fatalf("info request: %v", err)
+	}
+	infoReq.Header.Set("Authorization", "Bearer "+token)
+	infoResp, err := srv.Client().Do(infoReq)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	defer infoResp.Body.Close()
+	if infoResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(infoResp.Body)
+		t.Fatalf("info status = %d, body = %s", infoResp.StatusCode, body)
+	}
+
+	selectReq, err := http.NewRequest(http.MethodPost, srv.URL+"/rest/1.0/torrents/selectFiles/"+torrentID, strings.NewReader("files=1"))
+	if err != nil {
+		t.Fatalf("select request: %v", err)
+	}
+	selectReq.Header.Set("Authorization", "Bearer "+token)
+	selectReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	selectResp, err := srv.Client().Do(selectReq)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	defer selectResp.Body.Close()
+	if selectResp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(selectResp.Body)
+		t.Fatalf("select status = %d, body = %s", selectResp.StatusCode, body)
+	}
+
+	updated, err := db.GetTorrent(ctx, torrentID)
+	if err != nil {
+		t.Fatalf("get torrent: %v", err)
+	}
+	if updated.Status != "queued" {
+		t.Fatalf("status = %q, want queued", updated.Status)
+	}
+	if !updated.Files[0].Selected || updated.Files[1].Selected {
+		t.Fatalf("file selection = %+v", updated.Files)
+	}
 }
 
 func TestMetricsDisabled(t *testing.T) {

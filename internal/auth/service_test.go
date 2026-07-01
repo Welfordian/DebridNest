@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -104,6 +105,24 @@ func TestCreateDeleteRotateUser(t *testing.T) {
 	}
 	if _, ok := svc.ValidateToken(ctx, "Bearer "+newToken); ok {
 		t.Fatal("deleted user token should be invalid")
+	}
+}
+
+func TestDeleteLastAdmin(t *testing.T) {
+	db := openTestDB(t)
+	svc, err := auth.New(db, true, "owner-token")
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	ctx := context.Background()
+
+	users, err := svc.ListUsers(ctx)
+	if err != nil || len(users) != 1 {
+		t.Fatalf("list users: %v len=%d", err, len(users))
+	}
+
+	if err := svc.DeleteUser(ctx, users[0].ID); !errors.Is(err, auth.ErrLastAdmin) {
+		t.Fatalf("delete last admin err = %v, want ErrLastAdmin", err)
 	}
 }
 

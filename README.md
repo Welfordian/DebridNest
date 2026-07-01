@@ -98,9 +98,12 @@ See [docs/remote-access.md](docs/remote-access.md) for Caddy TLS and Cloudflare 
 
 ## Configuration
 
+See [`.env.example`](.env.example) for the full list of environment variables (webhooks, seeding, transcode, VPN, qBit, etc.).
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DEBRIDNEST_API_TOKEN` | *(required)* | Bearer token for API auth |
+| `DEBRIDNEST_MULTI_USER` | `1` | `1` = per-user tokens in SQLite; `0` = legacy single shared token |
 | `DEBRIDNEST_PUBLIC_URL` | `http://localhost:8080` | Public URL in download/host links |
 | `DEBRIDNEST_DOMAIN` | `localhost` | Domain for Caddy `--profile tls` |
 | `DEBRIDNEST_DATA_DIR` | `/data` | Persistent storage root |

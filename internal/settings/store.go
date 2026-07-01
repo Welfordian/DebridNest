@@ -104,6 +104,23 @@ func (s *Store) GetMerged() Merged {
 	}
 }
 
+// RedactForNonAdmin returns merged settings with webhook secrets and URLs omitted.
+func (s *Store) RedactForNonAdmin() Merged {
+	m := s.GetMerged()
+	m.WebhookDiscordUrl = redactWebhookURL(m.WebhookDiscordUrl)
+	m.WebhookNtfyTopic = redactWebhookURL(m.WebhookNtfyTopic)
+	m.WebhookGotifyUrl = redactWebhookURL(m.WebhookGotifyUrl)
+	m.WebhookGotifyToken = ""
+	return m
+}
+
+func redactWebhookURL(u string) string {
+	if u == "" {
+		return ""
+	}
+	return "(configured)"
+}
+
 func (s *Store) Patch(ctx context.Context, fields map[string]any) (Merged, error) {
 	if len(fields) == 0 {
 		return s.GetMerged(), nil

@@ -1,4 +1,4 @@
-.PHONY: test test-integration vet build
+.PHONY: test test-integration vet dashboard build
 
 test:
 	go test ./...
@@ -9,5 +9,8 @@ test-integration:
 vet:
 	go vet ./...
 
-build:
+dashboard:
+	cd web/dashboard && npm ci && npm run build
+
+build: dashboard
 	go build -o bin/debridnest ./cmd/debridnest
