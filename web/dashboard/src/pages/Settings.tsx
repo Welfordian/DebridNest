@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, type SetStateAction, useCallback, useEffect, useState } from 'react';
 import {
   fetchConfig,
   fetchSettings,
@@ -68,6 +68,7 @@ function settingsToForm(settings: Settings) {
     notifyOnDownloadComplete: settings.notifyOnDownloadComplete ?? false,
     notifyOnQuotaWarning: settings.notifyOnQuotaWarning ?? false,
     s3Enabled: settings.s3Enabled ?? false,
+    s3QuotaGb: String(settings.s3QuotaGb ?? 0),
     s3Endpoint: settings.s3Endpoint ?? '',
     s3Bucket: settings.s3Bucket ?? '',
     s3Region: settings.s3Region ?? 'auto',
@@ -76,6 +77,32 @@ function settingsToForm(settings: Settings) {
     s3SecretKey: settings.s3SecretKey ?? '',
     s3ForcePathStyle: settings.s3ForcePathStyle ?? false,
     s3OffloadLocal: settings.s3OffloadLocal ?? false,
+  };
+}
+
+type SettingsForm = ReturnType<typeof settingsToForm>;
+
+function defaultSettingsForm(): SettingsForm {
+  return {
+    retentionDays: '0',
+    diskQuotaGb: '0',
+    downloadRateLimitMbps: '0',
+    webhookDiscordUrl: '',
+    webhookNtfyTopic: '',
+    webhookGotifyUrl: '',
+    webhookGotifyToken: '',
+    notifyOnDownloadComplete: false,
+    notifyOnQuotaWarning: false,
+    s3Enabled: false,
+    s3QuotaGb: '0',
+    s3Endpoint: '',
+    s3Bucket: '',
+    s3Region: 'auto',
+    s3Prefix: '',
+    s3AccessKey: '',
+    s3SecretKey: '',
+    s3ForcePathStyle: false,
+    s3OffloadLocal: false,
   };
 }
 
@@ -92,27 +119,13 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
   const [purgeMessage, setPurgeMessage] = useState<string | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
   const [s3TestBusy, setS3TestBusy] = useState(false);
+  const [formDirty, setFormDirty] = useState(false);
 
-  const [form, setForm] = useState(() => ({
-    retentionDays: '0',
-    diskQuotaGb: '0',
-    downloadRateLimitMbps: '0',
-    webhookDiscordUrl: '',
-    webhookNtfyTopic: '',
-    webhookGotifyUrl: '',
-    webhookGotifyToken: '',
-    notifyOnDownloadComplete: false,
-    notifyOnQuotaWarning: false,
-    s3Enabled: false,
-    s3Endpoint: '',
-    s3Bucket: '',
-    s3Region: 'auto',
-    s3Prefix: '',
-    s3AccessKey: '',
-    s3SecretKey: '',
-    s3ForcePathStyle: false,
-    s3OffloadLocal: false,
-  }));
+  const [form, setFormState] = useState<SettingsForm>(() => defaultSettingsForm());
+  const setForm = useCallback((updater: SetStateAction<SettingsForm>) => {
+    setFormDirty(true);
+    setFormState(updater);
+  }, []);
 
   const configLoader = useCallback(async () => {
     const [config, system, settings] = await Promise.all([
@@ -126,10 +139,10 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
   const { data, error, loading, refresh } = usePolling(configLoader, { intervalMs: 30000 });
 
   useEffect(() => {
-    if (data?.settings) {
-      setForm(settingsToForm(data.settings));
+    if (data?.settings && !formDirty) {
+      setFormState(settingsToForm(data.settings));
     }
-  }, [data?.settings]);
+  }, [data?.settings, formDirty]);
 
   async function handleSave(e: FormEvent) {
     e.preventDefault();
@@ -149,6 +162,7 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
 
     if (isAdmin) {
       patch.s3Enabled = form.s3Enabled;
+      patch.s3QuotaGb = Number(form.s3QuotaGb) || 0;
       patch.s3Endpoint = form.s3Endpoint.trim();
       patch.s3Bucket = form.s3Bucket.trim();
       patch.s3Region = form.s3Region.trim() || 'auto';
@@ -164,7 +178,9 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
     }
 
     try {
-      await patchSettings(patch);
+      const updated = await patchSettings(patch);
+      setFormState(settingsToForm(updated));
+      setFormDirty(false);
       toast('Settings saved');
       await refresh();
     } catch (err) {
@@ -420,6 +436,18 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
                     onChange={(e) => setForm((f) => ({ ...f, s3Bucket: e.target.value }))}
                   />
                 </div>
+                <div className="form-group">
+                  <label htmlFor="s3-quota">S3 quota (GB)</label>
+                  <input
+                    id="s3-quota"
+                    className="input"
+                    type="number"
+                    min={0}
+                    value={form.s3QuotaGb}
+                    onChange={(e) => setForm((f) => ({ ...f, s3QuotaGb: e.target.value }))}
+                  />
+                  <p className="form-hint">0 = unlimited</p>
+                </div>
               </div>
               <div className="form-row">
                 <div className="form-group">
@@ -522,6 +550,15 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
           <ConfigRow label="Public URL" value={config.publicUrl || '—'} />
           <ConfigRow label="WebDAV" value={config.webdavEnabled ? 'Enabled' : 'Disabled'} />
           <ConfigRow label="Metrics" value={config.metricsEnabled ? 'Enabled' : 'Disabled'} />
+          {config.s3Enabled != null && (
+            <ConfigRow label="Object storage" value={config.s3Enabled ? 'Enabled' : 'Disabled'} />
+          )}
+          {config.s3QuotaGb != null && (
+            <ConfigRow
+              label="S3 quota"
+              value={config.s3QuotaGb > 0 ? `${config.s3QuotaGb} GB` : 'Not set'}
+            />
+          )}
           {config.linkTtlHours != null && (
             <ConfigRow label="Link TTL" value={`${config.linkTtlHours} hours`} />
           )}
@@ -600,8 +637,11 @@ export default function SettingsPage({ isAdmin }: SettingsProps) {
         {cleanupResult && (
           <p className="success-msg">
             Cleanup complete — {cleanupResult.ageRemoved} removed by age,{' '}
-            {cleanupResult.quotaRemoved} by quota. Disk: {formatBytes(cleanupResult.diskUsed)}
-            {cleanupResult.diskQuota > 0 && ` / ${formatBytes(cleanupResult.diskQuota)}`}.
+            {cleanupResult.quotaRemoved} by disk quota, {cleanupResult.s3QuotaRemoved ?? 0} by
+            S3 quota. Disk: {formatBytes(cleanupResult.diskUsed)}
+            {cleanupResult.diskQuota > 0 && ` / ${formatBytes(cleanupResult.diskQuota)}`}. S3:{' '}
+            {formatBytes(cleanupResult.s3Used ?? 0)}
+            {(cleanupResult.s3Quota ?? 0) > 0 && ` / ${formatBytes(cleanupResult.s3Quota ?? 0)}`}.
           </p>
         )}
         {cleanupError && <p className="error hint-text">{cleanupError}</p>}

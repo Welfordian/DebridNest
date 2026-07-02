@@ -133,6 +133,55 @@ func toQBitTorrent(rec *storage.TorrentRecord, category string) map[string]any {
 	}
 }
 
+func torrentProperties(rec *storage.TorrentRecord) map[string]any {
+	size := torrentSize(rec)
+	completed := downloadedBytes(rec)
+	piecesHave := 0
+	if torrentmgr.IsCompletedStatus(rec.Status) || completed >= size && size > 0 {
+		piecesHave = 1
+	}
+	return map[string]any{
+		"save_path":                defaultSave,
+		"creation_date":            rec.AddedAt.Unix(),
+		"piece_size":               size,
+		"comment":                  "",
+		"total_wasted":             int64(0),
+		"total_uploaded":           int64(0),
+		"total_uploaded_session":   int64(0),
+		"total_downloaded":         completed,
+		"total_downloaded_session": completed,
+		"up_limit":                 int64(0),
+		"dl_limit":                 int64(0),
+		"time_elapsed":             timeActive(rec),
+		"seeding_time":             int64(0),
+		"nb_connections":           0,
+		"nb_connections_limit":     -1,
+		"share_ratio":              float64(0),
+		"addition_date":            rec.AddedAt.Unix(),
+		"completion_date":          completionOn(rec),
+		"created_by":               "DebridNest",
+		"dl_speed":                 rec.Speed,
+		"dl_speed_avg":             int64(0),
+		"eta":                      etaSeconds(rec),
+		"last_seen":                int64(-1),
+		"peers":                    0,
+		"peers_total":              0,
+		"pieces_have":              piecesHave,
+		"pieces_num":               1,
+		"reannounce":               int64(-1),
+		"seeds":                    rec.Seeders,
+		"seeds_total":              rec.Seeders,
+		"total_size":               size,
+	}
+}
+
+func qbitFilePriority(f storage.TorrentFileRecord) int {
+	if !f.Selected {
+		return 0
+	}
+	return 1
+}
+
 func completionOn(rec *storage.TorrentRecord) int64 {
 	if rec.EndedAt != nil {
 		return rec.EndedAt.Unix()

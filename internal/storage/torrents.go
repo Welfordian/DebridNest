@@ -52,6 +52,11 @@ type DownloadRecord struct {
 	GeneratedAt time.Time
 }
 
+type ObjectStorageUsage struct {
+	Bytes int64
+	Count int
+}
+
 func (db *DB) CreateTorrent(ctx context.Context, rec TorrentRecord) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -650,6 +655,33 @@ func (db *DB) CountTorrentsByStatus(ctx context.Context) (map[string]int, error)
 		out[status] = count
 	}
 	return out, rows.Err()
+}
+
+func (db *DB) ObjectStorageUsage(ctx context.Context) (ObjectStorageUsage, error) {
+	var usage ObjectStorageUsage
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(bytes), 0), COUNT(*)
+		FROM torrent_files
+		WHERE remote_stored = 1`).Scan(&usage.Bytes, &usage.Count)
+	return usage, err
+}
+
+func (db *DB) ObjectStorageReservedUsage(ctx context.Context, excludeTorrentID string) (ObjectStorageUsage, error) {
+	var usage ObjectStorageUsage
+	err := db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE
+				WHEN tf.remote_stored = 1 THEN tf.bytes
+				WHEN tf.selected = 1 AND t.status NOT IN ('error', 'magnet_error', 'dead') THEN tf.bytes
+				ELSE 0
+			END), 0),
+			COUNT(CASE WHEN tf.remote_stored = 1 THEN 1 END)
+		FROM torrent_files tf
+		JOIN torrents t ON t.id = tf.torrent_id
+		WHERE (? = '' OR tf.torrent_id <> ?)`,
+		excludeTorrentID, excludeTorrentID,
+	).Scan(&usage.Bytes, &usage.Count)
+	return usage, err
 }
 
 func (db *DB) ResetTorrentForRetry(ctx context.Context, id string) error {

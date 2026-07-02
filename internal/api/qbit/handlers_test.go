@@ -1,6 +1,8 @@
 package qbit
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,7 +14,11 @@ import (
 
 	"github.com/debridnest/debridnest/internal/auth"
 	"github.com/debridnest/debridnest/internal/config"
+	"github.com/debridnest/debridnest/internal/links"
+	"github.com/debridnest/debridnest/internal/objectstore"
+	"github.com/debridnest/debridnest/internal/settings"
 	"github.com/debridnest/debridnest/internal/storage"
+	torrentmgr "github.com/debridnest/debridnest/internal/torrent"
 )
 
 func testConfig() config.Config {
@@ -43,6 +49,41 @@ func newTestHandler(t *testing.T, cfg config.Config) *Handler {
 	return NewHandler(cfg, nil, authSvc)
 }
 
+func newTestHandlerWithManager(t *testing.T, cfg config.Config) (*Handler, *storage.DB) {
+	t.Helper()
+	cfg.DataDir = t.TempDir()
+	cfg.TorrentPort = "0"
+	cfg.PublicURL = "http://127.0.0.1:8080"
+	cfg.LinkSecret = "secret"
+	cfg.LinkTTL = time.Hour
+
+	db, err := storage.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	settingsStore, err := settings.NewStore(db, cfg)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("settings: %v", err)
+	}
+	authSvc, err := auth.New(db, false, cfg.APIToken)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("auth: %v", err)
+	}
+	signer := links.NewSigner(cfg.LinkSecret, cfg.PublicURL, cfg.Host, cfg.LinkTTL)
+	manager, err := torrentmgr.NewManager(cfg, db, signer, settingsStore, objectstore.Config{})
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("manager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+		_ = db.Close()
+	})
+	return NewHandler(cfg, manager, authSvc), db
+}
+
 func postForm(t *testing.T, h *Handler, path string, values map[string]string) (string, *httptest.ResponseRecorder) {
 	t.Helper()
 	form := url.Values{}
@@ -61,6 +102,17 @@ func httptestRequest(t *testing.T, h *Handler, method, path string, cookie *http
 	req := httptest.NewRequest(method, path, nil)
 	if cookie != nil {
 		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	newTestRouter(h).ServeHTTP(rec, req)
+	return rec
+}
+
+func httptestAuthRequest(t *testing.T, h *Handler, method, path string, configure func(*http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if configure != nil {
+		configure(req)
 	}
 	rec := httptest.NewRecorder()
 	newTestRouter(h).ServeHTTP(rec, req)
@@ -179,6 +231,22 @@ func TestLogin(t *testing.T) {
 	})
 }
 
+func TestAPIIndex(t *testing.T) {
+	h := newTestHandler(t, testConfig())
+
+	rec := httptestRequest(t, h, http.MethodGet, "/api/v2", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["webapiVersion"] != webAPIVersion {
+		t.Fatalf("webapiVersion = %v", body["webapiVersion"])
+	}
+}
+
 func TestAppVersionRequiresAuth(t *testing.T) {
 	cfg := testConfig()
 	h := newTestHandler(t, cfg)
@@ -186,5 +254,96 @@ func TestAppVersionRequiresAuth(t *testing.T) {
 	rec := httptestRequest(t, h, http.MethodGet, "/api/v2/app/version", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want forbidden", rec.Code)
+	}
+}
+
+func TestProtectedRoutesAcceptBasicAndBearerAuth(t *testing.T) {
+	h := newTestHandler(t, testConfig())
+
+	basic := httptestAuthRequest(t, h, http.MethodGet, "/api/v2/app/version", func(req *http.Request) {
+		req.SetBasicAuth("debridnest", "secret-token")
+	})
+	if basic.Code != http.StatusOK || basic.Body.String() != appVersion {
+		t.Fatalf("basic auth response = %d %q", basic.Code, basic.Body.String())
+	}
+
+	bearer := httptestAuthRequest(t, h, http.MethodGet, "/api/v2/app/version", func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer secret-token")
+	})
+	if bearer.Code != http.StatusOK || bearer.Body.String() != appVersion {
+		t.Fatalf("bearer auth response = %d %q", bearer.Code, bearer.Body.String())
+	}
+}
+
+func TestCompatibilityEndpoints(t *testing.T) {
+	h := newTestHandler(t, testConfig())
+	_, login := postForm(t, h, "/api/v2/auth/login", map[string]string{
+		"username": "debridnest",
+		"password": "secret-token",
+	})
+	cookies := login.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("login did not set cookie")
+	}
+	cookie := cookies[0]
+
+	for _, path := range []string{
+		"/api/v2/app/buildInfo",
+		"/api/v2/app/preferences",
+		"/api/v2/transfer/info",
+		"/api/v2/torrents/categories",
+		"/api/v2/torrents/tags",
+		"/api/v2/log/main",
+		"/api/v2/sync/maindata",
+	} {
+		rec := httptestRequest(t, h, http.MethodGet, path, cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, rec.Code)
+		}
+	}
+}
+
+func TestTorrentPropertiesAndFilesEndpoints(t *testing.T) {
+	h, db := newTestHandlerWithManager(t, testConfig())
+	ended := time.Unix(1700001000, 0)
+	rec := storage.TorrentRecord{
+		ID:            "QBITFILES",
+		InfoHash:      "00112233445566778899AABBCCDDEEFF00112233",
+		Magnet:        "magnet:?xt=urn:btih:00112233445566778899aabbccddeeff00112233",
+		Name:          "Release",
+		Status:        "downloaded",
+		Progress:      100,
+		Bytes:         1000,
+		OriginalBytes: 1000,
+		AddedAt:       time.Unix(1700000000, 0),
+		EndedAt:       &ended,
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "QBITFILES", Path: "/Release/movie.mkv", Bytes: 1000, DownloadedBytes: 1000, Selected: true},
+		},
+	}
+	if err := db.CreateTorrent(context.Background(), rec); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	hash := "00112233445566778899aabbccddeeff00112233"
+	props := httptestAuthRequest(t, h, http.MethodGet, "/api/v2/torrents/properties?hash="+hash, func(req *http.Request) {
+		req.SetBasicAuth("debridnest", "secret-token")
+	})
+	if props.Code != http.StatusOK {
+		t.Fatalf("properties status = %d", props.Code)
+	}
+
+	files := httptestAuthRequest(t, h, http.MethodGet, "/api/v2/torrents/files?hash="+hash, func(req *http.Request) {
+		req.SetBasicAuth("debridnest", "secret-token")
+	})
+	if files.Code != http.StatusOK {
+		t.Fatalf("files status = %d", files.Code)
+	}
+	var body []map[string]any
+	if err := json.Unmarshal(files.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode files: %v", err)
+	}
+	if len(body) != 1 || body[0]["name"] != "Release/movie.mkv" {
+		t.Fatalf("files body = %#v", body)
 	}
 }

@@ -107,6 +107,7 @@ func TestLoadFromEnvEnabled(t *testing.T) {
 	t.Setenv("DEBRIDNEST_S3_ENDPOINT", "https://s3.example.com")
 	t.Setenv("DEBRIDNEST_S3_FORCE_PATH_STYLE", "1")
 	t.Setenv("DEBRIDNEST_S3_OFFLOAD_LOCAL", "1")
+	t.Setenv("DEBRIDNEST_S3_QUOTA_GB", "500")
 
 	cfg := LoadFromEnv()
 	if !cfg.Enabled {
@@ -117,6 +118,9 @@ func TestLoadFromEnvEnabled(t *testing.T) {
 	}
 	if !cfg.ForcePathStyle || !cfg.OffloadLocal {
 		t.Fatalf("flags: pathStyle=%v offload=%v", cfg.ForcePathStyle, cfg.OffloadLocal)
+	}
+	if cfg.QuotaGB != 500 {
+		t.Fatalf("quota = %d, want 500", cfg.QuotaGB)
 	}
 }
 

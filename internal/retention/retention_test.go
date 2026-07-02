@@ -2,6 +2,8 @@ package retention
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,6 +68,37 @@ func seedCompletedTorrent(t *testing.T, db *storage.DB, id, hash string, ended t
 	}
 	if err := db.UpdateTorrent(ctx, rec); err != nil {
 		t.Fatalf("update torrent %s: %v", id, err)
+	}
+}
+
+func seedCompletedRemoteTorrent(t *testing.T, db *storage.DB, id, hash string, ended time.Time, bytes int64) {
+	t.Helper()
+	ctx := context.Background()
+	rec := storage.TorrentRecord{
+		ID:       id,
+		InfoHash: hash,
+		Name:     id,
+		Status:   "downloaded",
+		Bytes:    bytes,
+		AddedAt:  ended.Add(-time.Hour),
+		EndedAt:  &ended,
+		Files: []storage.TorrentFileRecord{
+			{
+				ID:           1,
+				TorrentID:    id,
+				Path:         "/remote.mkv",
+				Bytes:        bytes,
+				Selected:     true,
+				ObjectKey:    hash + "/remote.mkv",
+				RemoteStored: true,
+			},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create remote torrent %s: %v", id, err)
+	}
+	if err := db.UpdateTorrent(ctx, rec); err != nil {
+		t.Fatalf("update remote torrent %s: %v", id, err)
 	}
 }
 
@@ -146,5 +179,47 @@ func TestQuotaEvictionPreservesActive(t *testing.T) {
 	}
 	if rec.Status != "downloading" {
 		t.Fatalf("active status = %q", rec.Status)
+	}
+}
+
+func TestObjectStorageQuotaEvictsOldestRemoteStored(t *testing.T) {
+	runner, _, db, settingsStore := testRetention(t, 0, 0)
+	ctx := context.Background()
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(s3.Close)
+	if _, err := settingsStore.Patch(ctx, map[string]any{
+		"s3Enabled":        true,
+		"s3QuotaGb":        float64(1),
+		"s3Bucket":         "test-bucket",
+		"s3Endpoint":       s3.URL,
+		"s3AccessKey":      "access",
+		"s3SecretKey":      "secret",
+		"s3ForcePathStyle": true,
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	ended := time.Now().UTC().Add(-time.Hour)
+	seedCompletedRemoteTorrent(t, db, "REMOTE_OLD", "9999999999999999999999999999999999999999", ended.Add(-2*time.Hour), 700<<20)
+	seedCompletedRemoteTorrent(t, db, "REMOTE_NEW", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", ended, 700<<20)
+
+	result, err := runner.RunNow(ctx)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.S3QuotaRemoved != 1 {
+		t.Fatalf("S3 quota removed = %d, want 1", result.S3QuotaRemoved)
+	}
+	if result.S3Used != 700<<20 {
+		t.Fatalf("S3 used = %d, want %d", result.S3Used, 700<<20)
+	}
+
+	if _, err := db.GetTorrent(ctx, "REMOTE_OLD"); err == nil {
+		t.Fatal("old remote torrent still exists")
+	}
+	if _, err := db.GetTorrent(ctx, "REMOTE_NEW"); err != nil {
+		t.Fatalf("new remote torrent removed: %v", err)
 	}
 }

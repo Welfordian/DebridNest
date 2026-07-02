@@ -584,6 +584,63 @@ func TestGetSettingsRedaction(t *testing.T) {
 	_ = db
 }
 
+func TestS3QuotaSettingsConfigAndStats(t *testing.T) {
+	h, _, db := newTestHandler(t)
+	ctx := context.Background()
+
+	patchRec := serve(t, h, http.MethodPatch, "/settings", []byte(`{"s3Enabled":true,"s3QuotaGb":9}`))
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+	var settingsResp map[string]any
+	if err := json.Unmarshal(patchRec.Body.Bytes(), &settingsResp); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if settingsResp["s3QuotaGb"] != float64(9) {
+		t.Fatalf("settings s3QuotaGb = %v", settingsResp["s3QuotaGb"])
+	}
+
+	rec := storage.TorrentRecord{
+		ID:       "S3API",
+		InfoHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Status:   "downloaded",
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "S3API", Path: "/remote.mkv", Bytes: 2048, Selected: true, ObjectKey: "remote/movie.mkv", RemoteStored: true},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+
+	configRec := serve(t, h, http.MethodGet, "/config", nil)
+	if configRec.Code != http.StatusOK {
+		t.Fatalf("config status = %d", configRec.Code)
+	}
+	var configResp map[string]any
+	if err := json.Unmarshal(configRec.Body.Bytes(), &configResp); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if configResp["s3QuotaGb"] != float64(9) || configResp["s3Enabled"] != true {
+		t.Fatalf("config S3 fields = %+v", configResp)
+	}
+
+	statsRec := serve(t, h, http.MethodGet, "/stats", nil)
+	if statsRec.Code != http.StatusOK {
+		t.Fatalf("stats status = %d", statsRec.Code)
+	}
+	var statsResp map[string]any
+	if err := json.Unmarshal(statsRec.Body.Bytes(), &statsResp); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if statsResp["s3Used"] != float64(2048) || statsResp["s3ObjectCount"] != float64(1) {
+		t.Fatalf("stats S3 usage = %+v", statsResp)
+	}
+	if statsResp["s3QuotaGb"] != float64(9) || statsResp["s3Quota"] != float64(9*1024*1024*1024) {
+		t.Fatalf("stats S3 quota = %+v", statsResp)
+	}
+}
+
 func TestDeleteSelfRejected(t *testing.T) {
 	cfg := testConfig()
 	cfg.MultiUserEnabled = true

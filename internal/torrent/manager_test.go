@@ -61,6 +61,7 @@ func clearObjectStoreEnv(t *testing.T) {
 		"DEBRIDNEST_S3_PREFIX",
 		"DEBRIDNEST_S3_FORCE_PATH_STYLE",
 		"DEBRIDNEST_S3_OFFLOAD_LOCAL",
+		"DEBRIDNEST_S3_QUOTA_GB",
 		"DEBRIDNEST_S3_DIRECT",
 		"DEBRIDNEST_S3_EARLY_OFFLOAD",
 	} {
@@ -613,5 +614,143 @@ func TestCachedDiskUsed(t *testing.T) {
 	}
 	if stats.DiskUsed < 0 {
 		t.Fatalf("disk used = %d", stats.DiskUsed)
+	}
+}
+
+func TestSelectFilesRejectsObjectStorageQuotaExceeded(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	if _, err := manager.settings.Patch(ctx, map[string]any{
+		"s3Enabled": true,
+		"s3QuotaGb": float64(1),
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	rec := storage.TorrentRecord{
+		ID:       "S3QUOTA_SELECT",
+		InfoHash: "5555555555555555555555555555555555555555",
+		Status:   string(StatusWaitingFileSelection),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "S3QUOTA_SELECT", Path: "/too-large.mkv", Bytes: 2 << 30},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	err := manager.SelectFiles(ctx, rec.ID, "1")
+	if !errors.Is(err, ErrObjectStorageQuotaExceeded) {
+		t.Fatalf("SelectFiles error = %v, want ErrObjectStorageQuotaExceeded", err)
+	}
+
+	after, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if after.Files[0].Selected {
+		t.Fatal("file selection was persisted despite quota error")
+	}
+}
+
+func TestSelectFilesCountsReservedObjectStorageQuota(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	if _, err := manager.settings.Patch(ctx, map[string]any{
+		"s3Enabled": true,
+		"s3QuotaGb": float64(1),
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	existing := storage.TorrentRecord{
+		ID:       "S3QUOTA_EXISTING",
+		InfoHash: "7777777777777777777777777777777777777777",
+		Status:   string(StatusDownloading),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "S3QUOTA_EXISTING", Path: "/existing.mkv", Bytes: 800 << 20, Selected: true},
+		},
+	}
+	next := storage.TorrentRecord{
+		ID:       "S3QUOTA_NEXT",
+		InfoHash: "8888888888888888888888888888888888888888",
+		Status:   string(StatusWaitingFileSelection),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "S3QUOTA_NEXT", Path: "/next.mkv", Bytes: 300 << 20},
+		},
+	}
+	if err := db.CreateTorrent(ctx, existing); err != nil {
+		t.Fatalf("create existing: %v", err)
+	}
+	if err := db.CreateTorrent(ctx, next); err != nil {
+		t.Fatalf("create next: %v", err)
+	}
+
+	err := manager.SelectFiles(ctx, next.ID, "1")
+	if !errors.Is(err, ErrObjectStorageQuotaExceeded) {
+		t.Fatalf("SelectFiles error = %v, want ErrObjectStorageQuotaExceeded", err)
+	}
+}
+
+func TestStatsIncludeObjectStorageUsage(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	if _, err := manager.settings.Patch(ctx, map[string]any{
+		"s3Enabled": true,
+		"s3QuotaGb": float64(3),
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	rec := storage.TorrentRecord{
+		ID:       "S3STATS",
+		InfoHash: "6666666666666666666666666666666666666666",
+		Status:   string(StatusDownloaded),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, TorrentID: "S3STATS", Path: "/remote.mkv", Bytes: 1234, Selected: true, ObjectKey: "remote/movie.mkv", RemoteStored: true},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	stats, err := manager.Stats(ctx)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if !stats.S3Enabled {
+		t.Fatal("expected S3 enabled in stats")
+	}
+	if stats.S3Used != 1234 || stats.S3ObjectCount != 1 {
+		t.Fatalf("S3 usage = %d/%d, want 1234/1", stats.S3Used, stats.S3ObjectCount)
+	}
+	if stats.S3Quota != 3*1024*1024*1024 {
+		t.Fatalf("S3 quota = %d", stats.S3Quota)
+	}
+}
+
+func TestStatsHideObjectStorageQuotaWhenS3Disabled(t *testing.T) {
+	manager, _ := testManager(t)
+	ctx := context.Background()
+	if _, err := manager.settings.Patch(ctx, map[string]any{
+		"s3Enabled": false,
+		"s3QuotaGb": int64(3),
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	stats, err := manager.Stats(ctx)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.S3Enabled {
+		t.Fatal("expected S3 disabled in stats")
+	}
+	if stats.S3Quota != 0 {
+		t.Fatalf("S3 quota = %d, want 0 when disabled", stats.S3Quota)
 	}
 }

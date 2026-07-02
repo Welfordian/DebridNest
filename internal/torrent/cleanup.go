@@ -101,15 +101,45 @@ func (m *Manager) torrentDataDirs(rec *storage.TorrentRecord) []string {
 }
 
 func (m *Manager) removeTorrentData(ctx context.Context, rec *storage.TorrentRecord) {
-	store, err := m.objectStoreForSettings()
-	for _, f := range rec.Files {
-		if err == nil && f.RemoteStored && f.ObjectKey != "" && store != nil && store.Enabled() {
-			_ = store.Delete(ctx, f.ObjectKey)
-		}
-	}
+	_ = m.deleteRemoteObjects(ctx, rec)
 	for _, dir := range m.torrentDataDirs(rec) {
 		_ = os.RemoveAll(dir)
 	}
+}
+
+func (m *Manager) remoteObjectKey(store interface {
+	ObjectKey(string, string) string
+}, rec *storage.TorrentRecord, f storage.TorrentFileRecord) string {
+	if f.ObjectKey != "" {
+		return f.ObjectKey
+	}
+	if store == nil || rec == nil || rec.InfoHash == "" || f.Path == "" {
+		return ""
+	}
+	return store.ObjectKey(rec.InfoHash, f.Path)
+}
+
+func (m *Manager) deleteRemoteObjects(ctx context.Context, rec *storage.TorrentRecord) error {
+	store, err := m.objectStoreForSettings()
+	if err != nil {
+		return err
+	}
+	if store == nil || !store.Enabled() || rec == nil {
+		return nil
+	}
+	for _, f := range rec.Files {
+		if !f.RemoteStored {
+			continue
+		}
+		key := m.remoteObjectKey(store, rec, f)
+		if key == "" {
+			continue
+		}
+		if err := store.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) reconcileOrphanFiles(ctx context.Context) {

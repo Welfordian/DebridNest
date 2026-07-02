@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/debridnest/debridnest/internal/config"
 	"github.com/debridnest/debridnest/internal/objectstore"
 	"github.com/debridnest/debridnest/internal/storage"
 )
+
+const maxQuotaGB = int64(8589934591)
 
 const (
 	keyRetentionDays            = "retentionDays"
@@ -30,6 +33,7 @@ const (
 	keyS3SecretKey              = "s3SecretKey"
 	keyS3ForcePathStyle         = "s3ForcePathStyle"
 	keyS3OffloadLocal           = "s3OffloadLocal"
+	keyS3QuotaGb                = "s3QuotaGb"
 )
 
 var patchableKeys = map[string]bool{
@@ -51,6 +55,7 @@ var patchableKeys = map[string]bool{
 	keyS3SecretKey:              true,
 	keyS3ForcePathStyle:         true,
 	keyS3OffloadLocal:           true,
+	keyS3QuotaGb:                true,
 }
 
 type Merged struct {
@@ -72,6 +77,7 @@ type Merged struct {
 	S3SecretKey              string  `json:"s3SecretKey"`
 	S3ForcePathStyle         bool    `json:"s3ForcePathStyle"`
 	S3OffloadLocal           bool    `json:"s3OffloadLocal"`
+	S3QuotaGb                int64   `json:"s3QuotaGb"`
 }
 
 type Store struct {
@@ -138,6 +144,7 @@ func (s *Store) GetMerged() Merged {
 		S3SecretKey:              s.GetS3SecretKey(),
 		S3ForcePathStyle:         s.GetS3ForcePathStyle(),
 		S3OffloadLocal:           s.GetS3OffloadLocal(),
+		S3QuotaGb:                s.GetS3QuotaGB(),
 	}
 }
 
@@ -182,6 +189,10 @@ func (s *Store) Patch(ctx context.Context, fields map[string]any) (Merged, error
 		if !patchableKeys[key] {
 			return Merged{}, fmt.Errorf("unknown setting: %s", key)
 		}
+		value, err = normalizePatchValue(key, value)
+		if err != nil {
+			return Merged{}, err
+		}
 		raw, err := json.Marshal(value)
 		if err != nil {
 			return Merged{}, fmt.Errorf("encode %s: %w", key, err)
@@ -202,6 +213,69 @@ func (s *Store) Patch(ctx context.Context, fields map[string]any) (Merged, error
 		return Merged{}, err
 	}
 	return s.GetMerged(), nil
+}
+
+func normalizePatchValue(key string, value any) (any, error) {
+	if key != keyS3QuotaGb {
+		return value, nil
+	}
+	v, err := nonNegativeIntegerSetting(key, value)
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func nonNegativeIntegerSetting(key string, value any) (int64, error) {
+	var v int64
+	switch n := value.(type) {
+	case int:
+		v = int64(n)
+	case int8:
+		v = int64(n)
+	case int16:
+		v = int64(n)
+	case int32:
+		v = int64(n)
+	case int64:
+		v = n
+	case uint:
+		if uint64(n) > uint64(maxQuotaGB) {
+			return 0, fmt.Errorf("%s must be between 0 and %d", key, maxQuotaGB)
+		}
+		v = int64(n)
+	case uint8:
+		v = int64(n)
+	case uint16:
+		v = int64(n)
+	case uint32:
+		v = int64(n)
+	case uint64:
+		if n > uint64(maxQuotaGB) {
+			return 0, fmt.Errorf("%s must be between 0 and %d", key, maxQuotaGB)
+		}
+		v = int64(n)
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n {
+			return 0, fmt.Errorf("%s must be a whole number", key)
+		}
+		if n < 0 || n > float64(maxQuotaGB) {
+			return 0, fmt.Errorf("%s must be between 0 and %d", key, maxQuotaGB)
+		}
+		v = int64(n)
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("%s must be a whole number", key)
+		}
+		v = i
+	default:
+		return 0, fmt.Errorf("%s must be a whole number", key)
+	}
+	if v < 0 || v > maxQuotaGB {
+		return 0, fmt.Errorf("%s must be between 0 and %d", key, maxQuotaGB)
+	}
+	return v, nil
 }
 
 func (s *Store) GetRetentionDays() int {
@@ -330,6 +404,13 @@ func (s *Store) GetS3OffloadLocal() bool {
 	return s.s3Defaults().OffloadLocal
 }
 
+func (s *Store) GetS3QuotaGB() int64 {
+	if v, ok := s.overrideInt64(keyS3QuotaGb); ok {
+		return v
+	}
+	return s.s3Defaults().QuotaGB
+}
+
 func (s *Store) S3Config() objectstore.Config {
 	return objectstore.Config{
 		Enabled:        s.GetS3Enabled(),
@@ -341,6 +422,7 @@ func (s *Store) S3Config() objectstore.Config {
 		Prefix:         s.GetS3Prefix(),
 		ForcePathStyle: s.GetS3ForcePathStyle(),
 		OffloadLocal:   s.GetS3OffloadLocal(),
+		QuotaGB:        s.GetS3QuotaGB(),
 		EarlyOffload:   s.s3Defaults().EarlyOffload,
 	}
 }
@@ -351,6 +433,14 @@ func (s *Store) s3Defaults() objectstore.Config {
 
 func (s *Store) DiskQuotaBytes() int64 {
 	gb := s.GetDiskQuotaGB()
+	if gb <= 0 {
+		return 0
+	}
+	return gb * 1024 * 1024 * 1024
+}
+
+func (s *Store) S3QuotaBytes() int64 {
+	gb := s.GetS3QuotaGB()
 	if gb <= 0 {
 		return 0
 	}

@@ -50,14 +50,33 @@ func (s *sessionStore) valid(sid string) bool {
 	return true
 }
 
+func (s *sessionStore) delete(sid string) {
+	if sid == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.sessions, sid)
+	s.mu.Unlock()
+}
+
 func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookie)
-		if err != nil || !h.sessions.valid(cookie.Value) {
-			w.WriteHeader(http.StatusForbidden)
+		if err == nil && h.sessions.valid(cookie.Value) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		if user, password, ok := r.BasicAuth(); ok && h.authenticateLogin(r.Context(), user, password) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if h.auth != nil {
+			if _, ok := h.auth.ValidateToken(r.Context(), r.Header.Get("Authorization")); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusForbidden)
 	})
 }
 

@@ -212,6 +212,69 @@ func TestCompletedOffloadRemovesAlreadyRemoteLocalFile(t *testing.T) {
 	}
 }
 
+func TestOffloadSkipsUploadWhenObjectStorageQuotaExceeded(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+	if _, err := manager.settings.Patch(ctx, map[string]any{
+		"s3Enabled": true,
+		"s3QuotaGb": float64(1),
+	}); err != nil {
+		t.Fatalf("patch settings: %v", err)
+	}
+
+	existing := storage.TorrentRecord{
+		ID:       "REMOTE_FULL",
+		InfoHash: "7777777777777777777777777777777777777777",
+		Status:   string(StatusDownloaded),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{
+				ID:           1,
+				TorrentID:    "REMOTE_FULL",
+				Path:         "/existing.mkv",
+				Bytes:        1 << 30,
+				Selected:     true,
+				ObjectKey:    "remote/existing.mkv",
+				RemoteStored: true,
+			},
+		},
+	}
+	if err := db.CreateTorrent(ctx, existing); err != nil {
+		t.Fatalf("create existing: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "new.mkv")
+	if err := os.WriteFile(localPath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	rec := storage.TorrentRecord{
+		ID:       "REMOTE_SKIP",
+		InfoHash: "8888888888888888888888888888888888888888",
+		Status:   string(StatusDownloaded),
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{
+				ID:              1,
+				TorrentID:       "REMOTE_SKIP",
+				Path:            "/new.mkv",
+				Bytes:           4,
+				DownloadedBytes: 4,
+				Selected:        true,
+				DiskPath:        localPath,
+			},
+		},
+	}
+
+	manager.offloadFiles(ctx, nil, &rec, false)
+
+	if rec.Files[0].RemoteStored {
+		t.Fatal("file was marked remote despite object storage quota")
+	}
+	if _, err := os.Stat(localPath); err != nil {
+		t.Fatalf("local file should remain after skipped offload: %v", err)
+	}
+}
+
 func TestGetTorrentFileByRelativePath(t *testing.T) {
 	manager, db := testManager(t)
 	ctx := context.Background()

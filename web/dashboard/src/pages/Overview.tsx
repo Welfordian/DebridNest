@@ -23,6 +23,11 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function formatCount(value: number, singular: string, plural: string) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  return `${new Intl.NumberFormat().format(safeValue)} ${safeValue === 1 ? singular : plural}`;
+}
+
 function StatCard({
   label,
   value,
@@ -125,6 +130,18 @@ export default function Overview({ onNavigate }: { onNavigate: (tab: Tab) => voi
   const hasQuota = stats.diskQuota > 0;
   const usedPct = hasQuota ? Math.min(100, (stats.diskUsed / stats.diskQuota) * 100) : 0;
   const quotaTone = usedPct >= 95 ? ' tone-danger' : usedPct >= 80 ? ' tone-streamable' : '';
+  const s3Used = Number.isFinite(stats.s3Used) ? stats.s3Used : 0;
+  const s3Quota = Number.isFinite(stats.s3Quota) ? stats.s3Quota : 0;
+  const s3QuotaGb = Number.isFinite(stats.s3QuotaGb) ? stats.s3QuotaGb : 0;
+  const s3ObjectCount = Number.isFinite(stats.s3ObjectCount) ? stats.s3ObjectCount : 0;
+  const hasS3Quota = stats.s3Enabled && s3Quota > 0;
+  const s3UsedPct = hasS3Quota ? Math.min(100, (s3Used / s3Quota) * 100) : 0;
+  const s3QuotaTone =
+    s3UsedPct >= 95 ? ' tone-danger' : s3UsedPct >= 80 ? ' tone-streamable' : '';
+  const s3ObjectLabel = formatCount(s3ObjectCount, 'object', 'objects');
+  const s3Detail = stats.s3Enabled
+    ? `${formatQuotaLabel(s3Used, s3Quota, s3QuotaGb)} · ${s3ObjectLabel}`
+    : `Disabled · ${s3ObjectLabel}`;
   const active = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'active');
   const ready = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'completed');
   const failed = lifecycleCount(stats.lifecycleCounts, stats.statusCounts, 'failed');
@@ -164,6 +181,33 @@ export default function Overview({ onNavigate }: { onNavigate: (tab: Tab) => voi
             <div
               className={`disk-bar-fill${quotaTone}`}
               style={{ width: hasQuota ? `${usedPct}%` : '0%' }}
+            />
+          </div>
+        </StatCard>
+
+        <StatCard
+          hero
+          label="Object storage"
+          value={formatBytes(s3Used)}
+          detail={s3Detail}
+          accessory={
+            stats.s3Enabled ? (
+              hasS3Quota ? (
+                <span className={s3UsedPct >= 80 ? 'pill pill-warning' : 'pill pill-accent'}>
+                  {s3UsedPct.toFixed(0)}% of quota
+                </span>
+              ) : (
+                <span className="pill pill-accent">Unlimited</span>
+              )
+            ) : (
+              <span className="pill pill-muted">Disabled</span>
+            )
+          }
+        >
+          <div className="disk-bar" aria-hidden={!hasS3Quota}>
+            <div
+              className={`disk-bar-fill${s3QuotaTone}`}
+              style={{ width: hasS3Quota ? `${s3UsedPct}%` : '0%' }}
             />
           </div>
         </StatCard>
@@ -235,6 +279,11 @@ export default function Overview({ onNavigate }: { onNavigate: (tab: Tab) => voi
           <ConfigRow
             label="Disk quota"
             value={stats.diskQuotaGb > 0 ? `${stats.diskQuotaGb} GB` : 'Not set'}
+          />
+          <ConfigRow label="Object storage" value={stats.s3Enabled ? 'Enabled' : 'Disabled'} />
+          <ConfigRow
+            label="S3 quota"
+            value={stats.s3QuotaGb > 0 ? `${stats.s3QuotaGb} GB` : 'Not set'}
           />
           <ConfigRow
             label="Download cap"

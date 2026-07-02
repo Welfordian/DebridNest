@@ -4,6 +4,11 @@ export interface Stats {
   diskUsed: number;
   diskQuota: number;
   diskQuotaGb: number;
+  s3Used: number;
+  s3Quota: number;
+  s3QuotaGb: number;
+  s3ObjectCount: number;
+  s3Enabled: boolean;
   torrentCount: number;
   activeCount: number;
   downloadSpeed: number;
@@ -69,6 +74,8 @@ export interface Config {
   publicUrl: string;
   retentionDays: number;
   diskQuotaGb: number;
+  s3QuotaGb?: number;
+  s3Enabled?: boolean;
   rateLimitMbps: number;
   webdavEnabled: boolean;
   metricsEnabled: boolean;
@@ -97,8 +104,11 @@ export interface SystemInfo {
 export interface RetentionResult {
   ageRemoved: number;
   quotaRemoved: number;
+  s3QuotaRemoved?: number;
   diskUsed: number;
   diskQuota: number;
+  s3Used?: number;
+  s3Quota?: number;
 }
 
 export interface AddTorrentResult {
@@ -273,6 +283,7 @@ export interface Settings {
   notifyOnDownloadComplete?: boolean;
   notifyOnQuotaWarning?: boolean;
   s3Enabled?: boolean;
+  s3QuotaGb?: number;
   s3Endpoint?: string;
   s3Bucket?: string;
   s3Region?: string;
@@ -294,6 +305,7 @@ export interface SettingsPatch {
   notifyOnDownloadComplete?: boolean;
   notifyOnQuotaWarning?: boolean;
   s3Enabled?: boolean;
+  s3QuotaGb?: number;
   s3Endpoint?: string;
   s3Bucket?: string;
   s3Region?: string;

@@ -58,12 +58,25 @@ Same steps as Sonarr, but use category `movies-radarr` (or your preferred catego
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/api/v2/auth/login` | Cookie-based login |
+| POST | `/api/v2/auth/logout` | Clear session cookie |
 | GET | `/api/v2/app/version` | Client compatibility check |
 | GET | `/api/v2/app/webapiVersion` | API version (`2.11.0`) |
+| GET | `/api/v2/app/buildInfo` | Build information stub |
+| GET | `/api/v2/app/preferences` | qBittorrent preferences stub |
+| GET | `/api/v2/app/defaultSavePath` | Default save path (`/downloads`) |
+| GET | `/api/v2/transfer/info` | Global transfer state |
 | POST | `/api/v2/torrents/add` | Add magnet (`urls` + optional `category`) |
 | GET | `/api/v2/torrents/info` | List torrents |
+| GET | `/api/v2/torrents/properties` | Torrent properties by hash |
+| GET | `/api/v2/torrents/files` | Torrent file list by hash |
+| GET | `/api/v2/torrents/categories` | Category list |
+| POST | `/api/v2/torrents/createCategory` | Create category stub |
+| POST | `/api/v2/torrents/setCategory` | Assign category by hash |
 | POST | `/api/v2/torrents/delete` | Remove by info hash |
+| GET/POST | Additional qBit management probes | Safe stubs for tags, limits, pause/resume, recheck/reannounce |
 | GET | `/api/v2/sync/maindata` | Polling sync (full state stub) |
+
+`GET /api/v2` returns a small compatibility descriptor for browser/manual checks. qBittorrent-compatible clients should still use the grouped endpoints above.
 
 ## curl sanity check
 

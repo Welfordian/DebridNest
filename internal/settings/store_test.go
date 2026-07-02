@@ -36,9 +36,9 @@ func TestStorePatchAndMerge(t *testing.T) {
 	}
 
 	updated, err := store.Patch(context.Background(), map[string]any{
-		"retentionDays":         7,
-		"diskQuotaGb":           float64(250),
-		"downloadRateLimitMbps": 12.5,
+		"retentionDays":            7,
+		"diskQuotaGb":              float64(250),
+		"downloadRateLimitMbps":    12.5,
 		"notifyOnDownloadComplete": true,
 	})
 	if err != nil {
@@ -83,6 +83,33 @@ func TestStorePatchUnknownField(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsInvalidS3Quota(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	store, err := NewStore(db, config.Config{})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	for name, value := range map[string]any{
+		"negative":   float64(-1),
+		"fractional": float64(1.5),
+		"string":     "100",
+		"overflow":   float64(maxQuotaGB + 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := store.Patch(context.Background(), map[string]any{"s3QuotaGb": value}); err == nil {
+				t.Fatal("expected invalid quota error")
+			}
+		})
+	}
+}
+
 func TestStoreS3PatchGetAndRedaction(t *testing.T) {
 	t.Setenv("DEBRIDNEST_S3_ENABLED", "")
 	t.Setenv("DEBRIDNEST_S3_BUCKET", "")
@@ -109,6 +136,7 @@ func TestStoreS3PatchGetAndRedaction(t *testing.T) {
 		"s3SecretKey":      "secret-value",
 		"s3ForcePathStyle": true,
 		"s3OffloadLocal":   true,
+		"s3QuotaGb":        float64(750),
 	})
 	if err != nil {
 		t.Fatalf("patch: %v", err)
@@ -122,10 +150,19 @@ func TestStoreS3PatchGetAndRedaction(t *testing.T) {
 	if !merged.S3ForcePathStyle || !merged.S3OffloadLocal {
 		t.Fatal("expected S3 flags patched")
 	}
+	if merged.S3QuotaGb != 750 {
+		t.Fatalf("s3 quota = %d, want 750", merged.S3QuotaGb)
+	}
 
 	cfg := store.S3Config()
 	if !cfg.Enabled || cfg.Bucket != "my-bucket" || cfg.Endpoint == "" {
 		t.Fatalf("S3Config = %+v", cfg)
+	}
+	if cfg.QuotaGB != 750 {
+		t.Fatalf("S3Config quota = %d, want 750", cfg.QuotaGB)
+	}
+	if store.S3QuotaBytes() != 750*1024*1024*1024 {
+		t.Fatalf("S3 quota bytes = %d", store.S3QuotaBytes())
 	}
 
 	redacted := store.RedactForNonAdmin()

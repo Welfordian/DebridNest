@@ -56,6 +56,20 @@ func (h *Handler) effectiveDiskQuotaGB() int64 {
 	return h.cfg.DiskQuotaGB
 }
 
+func (h *Handler) effectiveS3QuotaGB() int64 {
+	if h.settings != nil {
+		return h.settings.GetS3QuotaGB()
+	}
+	return objectstore.LoadFromEnv().QuotaGB
+}
+
+func (h *Handler) effectiveS3Enabled() bool {
+	if h.settings != nil {
+		return h.settings.GetS3Enabled()
+	}
+	return objectstore.LoadFromEnv().Enabled
+}
+
 func (h *Handler) effectiveRateLimitMbps() float64 {
 	if h.settings != nil {
 		return h.settings.GetDownloadRateLimitMbps()

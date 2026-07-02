@@ -32,6 +32,17 @@ func (m *Manager) offloadTorrent(ctx context.Context, torrentID string) {
 
 func (m *Manager) offloadFiles(ctx context.Context, store *objectstore.Store, rec *storage.TorrentRecord, removeLocal bool) {
 	var updated []storage.TorrentFileRecord
+	var used int64
+	quota := m.objectStorageQuotaBytes()
+	if quota > 0 {
+		m.objectQuotaMu.Lock()
+		defer m.objectQuotaMu.Unlock()
+		usage, err := m.db.ObjectStorageUsage(ctx)
+		if err != nil {
+			return
+		}
+		used = usage.Bytes
+	}
 	for i := range rec.Files {
 		f := rec.Files[i]
 		if f.RemoteStored {
@@ -43,32 +54,50 @@ func (m *Manager) offloadFiles(ctx context.Context, store *objectstore.Store, re
 		if !offloadCandidate(f) {
 			continue
 		}
-		if changed, out := m.offloadOneFile(ctx, store, rec, f, removeLocal); changed {
+		if quota > 0 && used+f.Bytes > quota {
+			continue
+		}
+		if changed, out := m.offloadOneFile(ctx, store, rec, f); changed {
+			nextFiles := replaceTorrentFile(rec.Files, out)
+			if err := m.db.UpdateTorrentFiles(ctx, rec.ID, nextFiles); err != nil {
+				_ = store.Delete(ctx, out.ObjectKey)
+				continue
+			}
+			rec.Files = nextFiles
+			if removeLocal {
+				removeLocalOffloadedFile(out)
+			}
 			updated = append(updated, out)
+			used += f.Bytes
 		}
 	}
 	if len(updated) == 0 {
 		return
 	}
 
-	for _, f := range updated {
-		for i := range rec.Files {
-			if rec.Files[i].ID == f.ID {
-				rec.Files[i] = f
-				break
-			}
+	m.invalidateDiskUsed()
+}
+
+func replaceTorrentFile(files []storage.TorrentFileRecord, updated storage.TorrentFileRecord) []storage.TorrentFileRecord {
+	out := append([]storage.TorrentFileRecord(nil), files...)
+	for i := range out {
+		if out[i].ID == updated.ID {
+			out[i] = updated
+			return out
 		}
 	}
-	_ = m.db.UpdateTorrentFiles(ctx, rec.ID, rec.Files)
-	m.invalidateDiskUsed()
+	return out
 }
 
 func offloadCandidate(f storage.TorrentFileRecord) bool {
 	return f.Selected && !f.RemoteStored && f.Bytes > 0 && f.DownloadedBytes >= f.Bytes
 }
 
-func (m *Manager) offloadOneFile(ctx context.Context, store *objectstore.Store, rec *storage.TorrentRecord, f storage.TorrentFileRecord, removeLocal bool) (bool, storage.TorrentFileRecord) {
+func (m *Manager) offloadOneFile(ctx context.Context, store *objectstore.Store, rec *storage.TorrentRecord, f storage.TorrentFileRecord) (bool, storage.TorrentFileRecord) {
 	if !offloadCandidate(f) {
+		return false, f
+	}
+	if store == nil || !store.Enabled() {
 		return false, f
 	}
 	if f.DiskPath == "" {
@@ -85,9 +114,6 @@ func (m *Manager) offloadOneFile(ctx context.Context, store *objectstore.Store, 
 
 	f.ObjectKey = key
 	f.RemoteStored = true
-	if removeLocal {
-		removeLocalOffloadedFile(f)
-	}
 	return true, f
 }
 

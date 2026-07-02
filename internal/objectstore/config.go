@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -15,6 +16,7 @@ type Config struct {
 	Prefix         string
 	ForcePathStyle bool
 	OffloadLocal   bool
+	QuotaGB        int64
 	// EarlyOffload uploads each selected file as soon as it finishes downloading,
 	// instead of waiting for the entire torrent to reach downloaded status.
 	EarlyOffload bool
@@ -29,6 +31,7 @@ func LoadFromEnv() Config {
 	forcePathStyle := os.Getenv("DEBRIDNEST_S3_FORCE_PATH_STYLE") == "1"
 	direct := os.Getenv("DEBRIDNEST_S3_DIRECT") == "1"
 	offloadLocal := os.Getenv("DEBRIDNEST_S3_OFFLOAD_LOCAL") == "1"
+	quotaGB := parseQuotaGB(os.Getenv("DEBRIDNEST_S3_QUOTA_GB"))
 	if direct && os.Getenv("DEBRIDNEST_S3_OFFLOAD_LOCAL") == "" {
 		offloadLocal = true
 	}
@@ -44,6 +47,7 @@ func LoadFromEnv() Config {
 		Prefix:         prefix,
 		ForcePathStyle: forcePathStyle,
 		OffloadLocal:   offloadLocal,
+		QuotaGB:        quotaGB,
 		EarlyOffload:   earlyOffload,
 	}
 }
@@ -53,4 +57,16 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseQuotaGB(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
 }

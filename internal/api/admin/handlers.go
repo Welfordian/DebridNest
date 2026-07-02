@@ -104,6 +104,11 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"diskUsed":        s.DiskUsed,
 		"diskQuota":       s.DiskQuota,
+		"s3Used":          s.S3Used,
+		"s3Quota":         s.S3Quota,
+		"s3QuotaGb":       h.effectiveS3QuotaGB(),
+		"s3ObjectCount":   s.S3ObjectCount,
+		"s3Enabled":       s.S3Enabled,
 		"torrentCount":    s.TorrentCount,
 		"activeCount":     s.ActiveCount,
 		"downloadSpeed":   s.DownloadSpeed,
@@ -301,14 +306,18 @@ func (h *Handler) maintenanceCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.LogActivity(r.Context(), ActionMaintenance, map[string]any{
-		"ageRemoved":   result.AgeRemoved,
-		"quotaRemoved": result.QuotaRemoved,
+		"ageRemoved":     result.AgeRemoved,
+		"quotaRemoved":   result.QuotaRemoved,
+		"s3QuotaRemoved": result.S3QuotaRemoved,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ageRemoved":   result.AgeRemoved,
-		"quotaRemoved": result.QuotaRemoved,
-		"diskUsed":     result.DiskUsed,
-		"diskQuota":    result.DiskQuota,
+		"ageRemoved":     result.AgeRemoved,
+		"quotaRemoved":   result.QuotaRemoved,
+		"s3QuotaRemoved": result.S3QuotaRemoved,
+		"diskUsed":       result.DiskUsed,
+		"diskQuota":      result.DiskQuota,
+		"s3Used":         result.S3Used,
+		"s3Quota":        result.S3Quota,
 	})
 }
 
@@ -367,6 +376,8 @@ func (h *Handler) publicConfig(w http.ResponseWriter, r *http.Request) {
 		"publicUrl":      h.cfg.PublicURL,
 		"retentionDays":  h.effectiveRetentionDays(),
 		"diskQuotaGb":    h.effectiveDiskQuotaGB(),
+		"s3QuotaGb":      h.effectiveS3QuotaGB(),
+		"s3Enabled":      h.effectiveS3Enabled(),
 		"rateLimitMbps":  h.effectiveRateLimitMbps(),
 		"webdavEnabled":  h.cfg.WebDAVEnabled,
 		"metricsEnabled": h.cfg.MetricsEnabled,

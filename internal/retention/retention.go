@@ -14,10 +14,13 @@ import (
 )
 
 type RetentionResult struct {
-	AgeRemoved   int
-	QuotaRemoved int
-	DiskUsed     int64
-	DiskQuota    int64
+	AgeRemoved     int
+	QuotaRemoved   int
+	S3QuotaRemoved int
+	DiskUsed       int64
+	DiskQuota      int64
+	S3Used         int64
+	S3Quota        int64
 }
 
 type Runner struct {
@@ -49,6 +52,7 @@ func (r *Runner) Start() {
 func (r *Runner) RunNow(ctx context.Context) (RetentionResult, error) {
 	var result RetentionResult
 	result.DiskQuota = r.diskQuotaBytes()
+	result.S3Quota = r.objectStorageQuotaBytes()
 	var errs []error
 
 	retentionDays := r.retentionDays()
@@ -76,20 +80,40 @@ func (r *Runner) RunNow(ctx context.Context) (RetentionResult, error) {
 		}
 	}
 
-	if quota <= 0 || used <= quota {
-		return result, errors.Join(errs...)
+	if quota > 0 && used > quota {
+		removed, err := r.manager.EvictOldestCompleted(ctx, used-quota)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("quota eviction: %w", err))
+			return result, errors.Join(errs...)
+		}
+		result.QuotaRemoved = removed
+
+		if usedAfter, err := diskusage.DirSize(r.manager.FilesDir()); err == nil {
+			result.DiskUsed = usedAfter
+		}
 	}
 
-	removed, err := r.manager.EvictOldestCompleted(ctx, used-quota)
+	objectUsage, err := r.manager.ObjectStorageUsage(ctx)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("quota eviction: %w", err))
+		errs = append(errs, fmt.Errorf("object storage usage: %w", err))
 		return result, errors.Join(errs...)
 	}
-	result.QuotaRemoved = removed
-
-	if usedAfter, err := diskusage.DirSize(r.manager.FilesDir()); err == nil {
-		result.DiskUsed = usedAfter
+	result.S3Used = objectUsage.Bytes
+	if result.S3Quota > 0 && result.S3Used > result.S3Quota {
+		removed, err := r.manager.EvictOldestRemoteStored(ctx, result.S3Used-result.S3Quota)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("object storage quota eviction: %w", err))
+		}
+		result.S3QuotaRemoved = removed
+		if after, err := r.manager.ObjectStorageUsage(ctx); err == nil {
+			result.S3Used = after.Bytes
+		}
+		if result.S3Used > result.S3Quota {
+			errs = append(errs, fmt.Errorf("object storage quota still exceeded after eviction: %d used / %d quota", result.S3Used, result.S3Quota))
+			return result, errors.Join(errs...)
+		}
 	}
+
 	return result, errors.Join(errs...)
 }
 
@@ -107,6 +131,16 @@ func (r *Runner) diskQuotaBytes() int64 {
 	return r.cfg.DiskQuotaBytes()
 }
 
+func (r *Runner) objectStorageQuotaBytes() int64 {
+	if r.settings != nil {
+		if !r.settings.GetS3Enabled() {
+			return 0
+		}
+		return r.settings.S3QuotaBytes()
+	}
+	return r.manager.ObjectStorageQuotaBytes()
+}
+
 func (r *Runner) run(ctx context.Context) {
 	result, err := r.RunNow(ctx)
 	if err != nil {
@@ -117,5 +151,8 @@ func (r *Runner) run(ctx context.Context) {
 	}
 	if result.QuotaRemoved > 0 {
 		log.Printf("retention: evicted %d torrent(s) to satisfy disk quota", result.QuotaRemoved)
+	}
+	if result.S3QuotaRemoved > 0 {
+		log.Printf("retention: evicted %d torrent(s) to satisfy object storage quota", result.S3QuotaRemoved)
 	}
 }

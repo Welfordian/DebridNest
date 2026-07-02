@@ -39,6 +39,7 @@ type Manager struct {
 	objectMu       sync.RWMutex
 	objectStoreCfg objectstore.Config
 	objectStore    *objectstore.Store
+	objectQuotaMu  sync.Mutex
 
 	diskMu     sync.RWMutex
 	diskUsed   int64
@@ -50,6 +51,7 @@ type Hooks struct {
 }
 
 var ErrInvalidMagnet = errors.New("invalid magnet")
+var ErrObjectStorageQuotaExceeded = errors.New("S3 object storage quota exceeded")
 
 func (m *Manager) SetHooks(h *Hooks) {
 	m.mu.Lock()
@@ -171,6 +173,9 @@ func (m *Manager) AddMagnet(ctx context.Context, magnet string) (*storage.Torren
 		}
 		return existing, nil
 	}
+	if err := m.ensureObjectStorageQuotaAvailable(ctx, 0); err != nil {
+		return nil, err
+	}
 
 	id, err := newTorrentID()
 	if err != nil {
@@ -203,11 +208,25 @@ func (m *Manager) SelectFiles(ctx context.Context, torrentID, filesSpec string) 
 	if err := m.lifecycle.ApplySelection(rec, filesSpec); err != nil {
 		return err
 	}
-	if err := m.db.UpdateTorrentFiles(ctx, torrentID, rec.Files); err != nil {
-		return err
-	}
-	if err := m.db.UpdateTorrent(ctx, *rec); err != nil {
-		return err
+	if m.currentS3Config().Enabled && m.objectStorageQuotaBytes() > 0 {
+		m.objectQuotaMu.Lock()
+		defer m.objectQuotaMu.Unlock()
+		if err := m.ensureObjectStorageQuotaForSelection(ctx, rec); err != nil {
+			return err
+		}
+		if err := m.db.UpdateTorrentFiles(ctx, torrentID, rec.Files); err != nil {
+			return err
+		}
+		if err := m.db.UpdateTorrent(ctx, *rec); err != nil {
+			return err
+		}
+	} else {
+		if err := m.db.UpdateTorrentFiles(ctx, torrentID, rec.Files); err != nil {
+			return err
+		}
+		if err := m.db.UpdateTorrent(ctx, *rec); err != nil {
+			return err
+		}
 	}
 
 	m.mu.RLock()
@@ -650,7 +669,7 @@ func (m *Manager) syncRuntimeFiles(t *torrent.Torrent, rec *storage.TorrentRecor
 			continue
 		}
 		f := tfiles[idx]
-		if rec.Files[i].RemoteStored && rec.Files[i].ObjectKey != "" {
+		if rec.Files[i].RemoteStored {
 			rec.Files[i].DownloadedBytes = rec.Files[i].Bytes
 			rec.Files[i].StreamableBytes = rec.Files[i].Bytes
 			rec.Files[i].DiskPath = filepath.Join(m.filesDir, rec.InfoHash, filepath.FromSlash(f.Path()))
@@ -1105,12 +1124,16 @@ func selectedFilesRemoteStoredComplete(rec *storage.TorrentRecord) bool {
 }
 
 func remoteStoredComplete(f storage.TorrentFileRecord) bool {
-	return f.Bytes > 0 && f.RemoteStored && f.ObjectKey != ""
+	return f.Bytes > 0 && f.RemoteStored
 }
 
 type Stats struct {
 	DiskUsed        int64
 	DiskQuota       int64
+	S3Used          int64
+	S3Quota         int64
+	S3ObjectCount   int
+	S3Enabled       bool
 	TorrentCount    int
 	ActiveCount     int
 	DownloadSpeed   int64
@@ -1169,6 +1192,67 @@ func (m *Manager) diskQuotaBytes() int64 {
 	return m.cfg.DiskQuotaBytes()
 }
 
+func (m *Manager) objectStorageQuotaBytes() int64 {
+	var gb int64
+	if m.settings != nil {
+		gb = m.settings.GetS3QuotaGB()
+	} else {
+		gb = m.objectStoreCfg.QuotaGB
+	}
+	if gb <= 0 {
+		return 0
+	}
+	return gb * 1024 * 1024 * 1024
+}
+
+func (m *Manager) ensureObjectStorageQuotaAvailable(ctx context.Context, requiredBytes int64) error {
+	if !m.currentS3Config().Enabled {
+		return nil
+	}
+	quota := m.objectStorageQuotaBytes()
+	if quota <= 0 {
+		return nil
+	}
+	usage, err := m.db.ObjectStorageReservedUsage(ctx, "")
+	if err != nil {
+		return err
+	}
+	if requiredBytes <= 0 {
+		if usage.Bytes >= quota {
+			return ErrObjectStorageQuotaExceeded
+		}
+		return nil
+	}
+	if usage.Bytes+requiredBytes > quota {
+		return ErrObjectStorageQuotaExceeded
+	}
+	return nil
+}
+
+func (m *Manager) ensureObjectStorageQuotaForSelection(ctx context.Context, rec *storage.TorrentRecord) error {
+	if rec == nil {
+		return nil
+	}
+	quota := m.objectStorageQuotaBytes()
+	if quota <= 0 {
+		return nil
+	}
+	var required int64
+	for _, f := range rec.Files {
+		if f.Selected && !remoteStoredComplete(f) {
+			required += f.Bytes
+		}
+	}
+	usage, err := m.db.ObjectStorageReservedUsage(ctx, rec.ID)
+	if err != nil {
+		return err
+	}
+	if usage.Bytes+required > quota {
+		return ErrObjectStorageQuotaExceeded
+	}
+	return nil
+}
+
 const diskUsageMaxStale = 60 * time.Second
 
 func (m *Manager) reconcileDiskUsage(force bool) {
@@ -1223,16 +1307,40 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
+	objectUsage, err := m.db.ObjectStorageUsage(ctx)
+	if err != nil {
+		return Stats{}, err
+	}
+	s3Cfg := m.currentS3Config()
+	s3Quota := int64(0)
+	if s3Cfg.Enabled {
+		s3Quota = m.objectStorageQuotaBytes()
+	}
 
 	return Stats{
 		DiskUsed:        used,
 		DiskQuota:       m.diskQuotaBytes(),
+		S3Used:          objectUsage.Bytes,
+		S3Quota:         s3Quota,
+		S3ObjectCount:   objectUsage.Count,
+		S3Enabled:       s3Cfg.Enabled,
 		TorrentCount:    total,
 		ActiveCount:     active,
 		DownloadSpeed:   totalSpeed,
 		StatusCounts:    statusCounts,
 		LifecycleCounts: m.lifecycle.CountsByGroup(statusCounts),
 	}, nil
+}
+
+func (m *Manager) ObjectStorageUsage(ctx context.Context) (storage.ObjectStorageUsage, error) {
+	return m.db.ObjectStorageUsage(ctx)
+}
+
+func (m *Manager) ObjectStorageQuotaBytes() int64 {
+	if !m.currentS3Config().Enabled {
+		return 0
+	}
+	return m.objectStorageQuotaBytes()
 }
 
 func (m *Manager) DeleteCompletedBefore(ctx context.Context, before time.Time) (int, error) {
@@ -1275,6 +1383,51 @@ func (m *Manager) EvictOldestCompleted(ctx context.Context, needBytes int64) (in
 	}
 	m.invalidateDiskUsed()
 	return removed, nil
+}
+
+func (m *Manager) EvictOldestRemoteStored(ctx context.Context, needBytes int64) (int, error) {
+	if needBytes <= 0 {
+		return 0, nil
+	}
+	items, err := m.db.ListCompletedByEndedAt(ctx, 1000)
+	if err != nil {
+		return 0, err
+	}
+	var removed int
+	var freed int64
+	var firstErr error
+	for _, item := range items {
+		if freed >= needBytes {
+			break
+		}
+		rec, err := m.db.GetTorrent(ctx, item.ID)
+		if err != nil {
+			continue
+		}
+		var remoteBytes int64
+		for _, f := range rec.Files {
+			if remoteStoredComplete(f) {
+				remoteBytes += f.Bytes
+			}
+		}
+		if remoteBytes <= 0 {
+			continue
+		}
+		if err := m.deleteRemoteObjects(ctx, rec); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := m.Delete(ctx, rec.ID); err == nil {
+			removed++
+			freed += remoteBytes
+		} else if firstErr == nil {
+			firstErr = err
+		}
+	}
+	m.invalidateDiskUsed()
+	return removed, firstErr
 }
 
 func (m *Manager) PurgeByStatus(ctx context.Context, filter string) (int, error) {
@@ -1366,6 +1519,17 @@ func (m *Manager) AddTorrentFile(ctx context.Context, data []byte) (*storage.Tor
 			m.ensureHostLinks(ctx, existing)
 		}
 		return existing, nil
+	}
+	requiredBytes := int64(0)
+	if len(info.UpvertedFiles()) <= 1 {
+		requiredBytes = info.TotalLength()
+	}
+	if m.currentS3Config().Enabled && m.objectStorageQuotaBytes() > 0 {
+		m.objectQuotaMu.Lock()
+		defer m.objectQuotaMu.Unlock()
+		if err := m.ensureObjectStorageQuotaAvailable(ctx, requiredBytes); err != nil {
+			return nil, err
+		}
 	}
 
 	id, err := newTorrentID()

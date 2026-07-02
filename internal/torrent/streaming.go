@@ -88,10 +88,7 @@ func (m *Manager) OpenServingReader(ctx context.Context, torrentID string, fileI
 			return nil, time.Time{}, 0, err
 		}
 		if store != nil && store.Enabled() {
-			key := file.ObjectKey
-			if key == "" {
-				key = store.ObjectKey(rec.InfoHash, file.Path)
-			}
+			key := m.remoteObjectKey(store, rec, *file)
 			r, err := store.Open(ctx, key)
 			if err != nil {
 				return nil, time.Time{}, 0, err

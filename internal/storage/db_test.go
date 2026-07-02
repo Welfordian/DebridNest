@@ -146,6 +146,90 @@ func TestTorrentFileStreamableBytesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestObjectStorageUsageCountsRemoteStoredFiles(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := t.Context()
+	rec := TorrentRecord{
+		ID:       "REMOTEUSAGE01",
+		InfoHash: "4444444444444444444444444444444444444444",
+		Status:   "downloaded",
+		AddedAt:  time.Now().UTC(),
+		Files: []TorrentFileRecord{
+			{ID: 1, Path: "/remote.mkv", Bytes: 100, Selected: true, ObjectKey: "hash/remote.mkv", RemoteStored: true},
+			{ID: 2, Path: "/missing-key.mkv", Bytes: 200, Selected: true, RemoteStored: true},
+			{ID: 3, Path: "/local.mkv", Bytes: 300, Selected: true},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+
+	usage, err := db.ObjectStorageUsage(ctx)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Bytes != 300 || usage.Count != 2 {
+		t.Fatalf("usage = %+v, want 300 bytes and 2 objects", usage)
+	}
+}
+
+func TestObjectStorageReservedUsageIncludesSelectedActiveFiles(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	ctx := t.Context()
+	active := TorrentRecord{
+		ID:       "RESERVED01",
+		InfoHash: "1111111111111111111111111111111111111111",
+		Status:   "downloading",
+		AddedAt:  time.Now().UTC(),
+		Files: []TorrentFileRecord{
+			{ID: 1, Path: "/selected.mkv", Bytes: 100, Selected: true},
+			{ID: 2, Path: "/skipped.mkv", Bytes: 200},
+		},
+	}
+	failed := TorrentRecord{
+		ID:       "RESERVED02",
+		InfoHash: "2222222222222222222222222222222222222222",
+		Status:   "error",
+		AddedAt:  time.Now().UTC(),
+		Files: []TorrentFileRecord{
+			{ID: 1, Path: "/failed.mkv", Bytes: 300, Selected: true},
+			{ID: 2, Path: "/remote.mkv", Bytes: 400, RemoteStored: true},
+		},
+	}
+	if err := db.CreateTorrent(ctx, active); err != nil {
+		t.Fatalf("create active: %v", err)
+	}
+	if err := db.CreateTorrent(ctx, failed); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	usage, err := db.ObjectStorageReservedUsage(ctx, "")
+	if err != nil {
+		t.Fatalf("reserved usage: %v", err)
+	}
+	if usage.Bytes != 500 || usage.Count != 1 {
+		t.Fatalf("reserved usage = %+v, want 500 bytes and 1 object", usage)
+	}
+
+	excluding, err := db.ObjectStorageReservedUsage(ctx, active.ID)
+	if err != nil {
+		t.Fatalf("reserved usage excluding active: %v", err)
+	}
+	if excluding.Bytes != 400 || excluding.Count != 1 {
+		t.Fatalf("reserved usage excluding active = %+v, want 400 bytes and 1 object", excluding)
+	}
+}
+
 func seedLegacyDatabase(t *testing.T, dir string, names ...string) {
 	t.Helper()
 
