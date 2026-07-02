@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import { copyText } from '../lib/copy';
 import Icon from './Icon';
 
@@ -13,7 +13,10 @@ export default function CopyButton({
 }) {
   const [copied, setCopied] = useState(false);
 
-  async function handleCopy() {
+  async function handleCopy(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
     const ok = await copyText(value);
     if (ok) {
       setCopied(true);

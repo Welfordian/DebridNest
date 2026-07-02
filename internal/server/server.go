@@ -3,6 +3,8 @@ package server
 import (
 	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -74,10 +76,45 @@ func NewRouter(opts Options) (chi.Router, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.Handle("/dashboard/*", http.StripPrefix("/dashboard/", http.FileServer(http.FS(dashboard))))
+	r.Handle("/dashboard/*", dashboardHandler(dashboard))
 	r.Get("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard/", http.StatusFound)
 	})
 
 	return r, nil
+}
+
+func dashboardHandler(dashboard fs.FS) http.Handler {
+	fileServer := http.StripPrefix("/dashboard/", http.FileServer(http.FS(dashboard)))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/dashboard/")
+		clean := strings.TrimPrefix(path.Clean("/"+name), "/")
+		if clean == "." || clean == "" {
+			serveDashboardIndex(w, r, dashboard)
+			return
+		}
+
+		if info, err := fs.Stat(dashboard, clean); err == nil && !info.IsDir() {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		if strings.HasPrefix(clean, "assets/") || path.Ext(clean) != "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		serveDashboardIndex(w, r, dashboard)
+	})
+}
+
+func serveDashboardIndex(w http.ResponseWriter, r *http.Request, dashboard fs.FS) {
+	data, err := fs.ReadFile(dashboard, "index.html")
+	if err != nil {
+		http.Error(w, "dashboard not found", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

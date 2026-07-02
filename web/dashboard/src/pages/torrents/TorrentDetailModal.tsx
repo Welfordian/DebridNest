@@ -10,6 +10,29 @@ function fileSelected(file: TorrentFile): boolean {
   return file.selected === true || file.selected === 1;
 }
 
+function DetailStat({
+  label,
+  value,
+  code = false,
+  className = '',
+}: {
+  label: string;
+  value: string;
+  code?: boolean;
+  className?: string;
+}) {
+  const ValueTag = code ? 'code' : 'span';
+
+  return (
+    <div className={`detail-stat ${className}`.trim()}>
+      <span className="detail-stat-label">{label}</span>
+      <ValueTag className={code ? 'detail-stat-value detail-stat-code' : 'detail-stat-value'} title={value}>
+        {value}
+      </ValueTag>
+    </div>
+  );
+}
+
 function FileRow({ file }: { file: TorrentFile }) {
   const downloaded = Math.max(0, file.downloadedBytes ?? 0);
   const pct = file.bytes > 0 ? Math.min(100, (downloaded / file.bytes) * 100) : 0;
@@ -21,7 +44,7 @@ function FileRow({ file }: { file: TorrentFile }) {
         <span className="muted detail-file-path">{file.path}</span>
       </div>
       <div className="detail-file-meta">
-        <span>{formatBytes(file.bytes)}</span>
+        <span className="detail-file-size">{formatBytes(file.bytes)}</span>
         <span className={fileSelected(file) ? 'pill pill-live' : 'pill pill-muted'}>
           {fileSelected(file) ? 'selected' : 'skipped'}
         </span>
@@ -72,7 +95,7 @@ export default function TorrentDetailModal({
   const links = detail?.links ?? [];
 
   return (
-    <Modal title={current.name || 'Torrent detail'} onClose={onClose}>
+    <Modal title={current.name || 'Torrent detail'} onClose={onClose} wide>
       <div className="detail-stack">
         <div className="detail-meta">
           <LifecycleBadge torrent={current} />
@@ -80,22 +103,10 @@ export default function TorrentDetailModal({
         </div>
 
         <div className="detail-summary">
-          <div className="config-row">
-            <span className="config-label">Progress</span>
-            <span className="config-value">{formatProgress(progressPercent(current))}</span>
-          </div>
-          <div className="config-row">
-            <span className="config-label">Size</span>
-            <span className="config-value">{formatBytes(size)}</span>
-          </div>
-          <div className="config-row">
-            <span className="config-label">Hash</span>
-            <span className="config-value">{current.hash || '-'}</span>
-          </div>
-          <div className="config-row">
-            <span className="config-label">Links</span>
-            <span className="config-value">{lifecycle.linksVisible ? 'Visible' : 'Hidden'}</span>
-          </div>
+          <DetailStat label="Progress" value={formatProgress(progressPercent(current))} />
+          <DetailStat label="Size" value={formatBytes(size)} />
+          <DetailStat label="Hash" value={current.hash || '-'} code className="detail-stat-hash" />
+          <DetailStat label="Links" value={lifecycle.linksVisible ? 'Visible' : 'Hidden'} />
         </div>
 
         {loading && <p className="muted">Loading detail...</p>}
@@ -124,7 +135,7 @@ export default function TorrentDetailModal({
                     {links.map((link) => (
                       <li key={link}>
                         <code className="url-value">{link}</code>
-                        <CopyButton value={link} label="Copy" />
+                        <CopyButton value={link} label="Copy" className="btn btn-secondary btn-sm detail-copy-button" />
                       </li>
                     ))}
                   </ul>

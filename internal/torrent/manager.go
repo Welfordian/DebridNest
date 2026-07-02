@@ -579,6 +579,9 @@ func (m *Manager) trackTorrent(id string, t *torrent.Torrent) {
 			if err != nil {
 				return
 			}
+			if m.reconcileRemoteStoredComplete(ctx, rec) {
+				return
+			}
 
 			prevStatus := rec.Status
 			prevProgress := rec.Progress
@@ -647,6 +650,12 @@ func (m *Manager) syncRuntimeFiles(t *torrent.Torrent, rec *storage.TorrentRecor
 			continue
 		}
 		f := tfiles[idx]
+		if rec.Files[i].RemoteStored && rec.Files[i].ObjectKey != "" {
+			rec.Files[i].DownloadedBytes = rec.Files[i].Bytes
+			rec.Files[i].StreamableBytes = rec.Files[i].Bytes
+			rec.Files[i].DiskPath = filepath.Join(m.filesDir, rec.InfoHash, filepath.FromSlash(f.Path()))
+			continue
+		}
 		rec.Files[i].DownloadedBytes = f.BytesCompleted()
 		rec.Files[i].StreamableBytes = streamablePrefixBytes(f)
 		rec.Files[i].DiskPath = filepath.Join(m.filesDir, rec.InfoHash, filepath.FromSlash(f.Path()))
@@ -693,6 +702,10 @@ func (m *Manager) applySelection(torrentID string, t *torrent.Torrent, files []s
 }
 
 func (m *Manager) refreshProgress(ctx context.Context, rec *storage.TorrentRecord) {
+	if m.reconcileRemoteStoredComplete(ctx, rec) {
+		return
+	}
+
 	m.mu.RLock()
 	rt := m.active[rec.ID]
 	m.mu.RUnlock()
@@ -824,6 +837,9 @@ func (m *Manager) resumeIncomplete(ctx context.Context) error {
 	}
 	now := time.Now()
 	for _, rec := range items {
+		if m.reconcileRemoteStoredComplete(ctx, &rec) {
+			continue
+		}
 		if m.reconcileStaleMagnetConversion(ctx, rec, now) {
 			continue
 		}
@@ -916,6 +932,9 @@ func (m *Manager) backgroundLoop() {
 			}
 			now := time.Now()
 			for _, rec := range items {
+				if m.reconcileRemoteStoredComplete(ctx, &rec) {
+					continue
+				}
 				if m.reconcileStaleMagnetConversion(ctx, rec, now) {
 					continue
 				}
@@ -1029,10 +1048,64 @@ func (m *Manager) selectedCompleted(rec *storage.TorrentRecord) int64 {
 	var done int64
 	for _, f := range rec.Files {
 		if f.Selected {
+			if remoteStoredComplete(f) {
+				done += f.Bytes
+				continue
+			}
 			done += f.DownloadedBytes
 		}
 	}
 	return done
+}
+
+func (m *Manager) reconcileRemoteStoredComplete(ctx context.Context, rec *storage.TorrentRecord) bool {
+	if rec == nil || IsCompletedStatus(rec.Status) || !selectedFilesRemoteStoredComplete(rec) {
+		return false
+	}
+
+	for i := range rec.Files {
+		if rec.Files[i].Selected && remoteStoredComplete(rec.Files[i]) {
+			rec.Files[i].DownloadedBytes = rec.Files[i].Bytes
+			rec.Files[i].StreamableBytes = rec.Files[i].Bytes
+		}
+	}
+
+	m.lifecycle.MarkDownloaded(rec, time.Now().UTC())
+	m.ensureHostLinks(ctx, rec)
+	_ = m.db.UpdateTorrentFiles(ctx, rec.ID, rec.Files)
+	_ = m.db.UpdateTorrent(ctx, *rec)
+
+	m.mu.RLock()
+	rt := m.active[rec.ID]
+	m.mu.RUnlock()
+	if rt != nil {
+		m.dropRuntimeTorrent(rec.ID, rt.t)
+	}
+
+	m.fireDownloadComplete(rec.Name)
+	go m.offloadTorrent(context.Background(), rec.ID)
+	return true
+}
+
+func selectedFilesRemoteStoredComplete(rec *storage.TorrentRecord) bool {
+	if rec == nil {
+		return false
+	}
+	var selected bool
+	for _, f := range rec.Files {
+		if !f.Selected {
+			continue
+		}
+		selected = true
+		if !remoteStoredComplete(f) {
+			return false
+		}
+	}
+	return selected
+}
+
+func remoteStoredComplete(f storage.TorrentFileRecord) bool {
+	return f.Bytes > 0 && f.RemoteStored && f.ObjectKey != ""
 }
 
 type Stats struct {

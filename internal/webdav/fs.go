@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +28,7 @@ func newTorrentFS(manager *torrent.Manager) *torrentFS {
 
 type torrentIndex struct {
 	byFolder   map[string]*storage.TorrentRecord
+	byAlias    map[string]*storage.TorrentRecord
 	idToFolder map[string]string
 }
 
@@ -66,6 +66,7 @@ func (fs *torrentFS) buildIndex(ctx context.Context) (*torrentIndex, error) {
 	}
 	idx := &torrentIndex{
 		byFolder:   make(map[string]*storage.TorrentRecord),
+		byAlias:    make(map[string]*storage.TorrentRecord),
 		idToFolder: make(map[string]string),
 	}
 	seen := map[string]int{}
@@ -83,6 +84,11 @@ func (fs *torrentFS) buildIndex(ctx context.Context) (*torrentIndex, error) {
 		}
 		idx.byFolder[folder] = rec
 		idx.idToFolder[rec.ID] = folder
+		idx.byAlias[strings.ToLower(folder)] = rec
+		idx.byAlias[strings.ToLower(rec.ID)] = rec
+		if rec.InfoHash != "" {
+			idx.byAlias[strings.ToLower(rec.InfoHash)] = rec
+		}
 	}
 	return idx, nil
 }
@@ -154,7 +160,9 @@ func listChildren(rec *storage.TorrentRecord, subPath string) []fileInfo {
 }
 
 func findFile(rec *storage.TorrentRecord, subPath string) (*storage.TorrentFileRecord, bool) {
-	want := "/" + strings.Trim(strings.ReplaceAll(subPath, "\\", "/"), "/")
+	clean := strings.Trim(strings.ReplaceAll(subPath, "\\", "/"), "/")
+	want := "/" + clean
+	var basenameMatch *storage.TorrentFileRecord
 	for i := range rec.Files {
 		f := &rec.Files[i]
 		if !f.Selected {
@@ -164,6 +172,15 @@ func findFile(rec *storage.TorrentRecord, subPath string) (*storage.TorrentFileR
 		if p == want {
 			return f, true
 		}
+		if path.Base(p) == clean {
+			if basenameMatch != nil {
+				return nil, false
+			}
+			basenameMatch = f
+		}
+	}
+	if basenameMatch != nil {
+		return basenameMatch, true
 	}
 	return nil, false
 }
@@ -243,11 +260,19 @@ func (d *vfsDir) Readdir(n int) ([]os.FileInfo, error) {
 	return out, nil
 }
 
-type readOnlyFile struct {
-	*os.File
+type servingFile struct {
+	reader io.ReadSeekCloser
+	info   fileInfo
 }
 
-func (f *readOnlyFile) Write([]byte) (int, error) { return 0, errReadOnly }
+func (f *servingFile) Read(p []byte) (int, error)         { return f.reader.Read(p) }
+func (f *servingFile) Write([]byte) (int, error)          { return 0, errReadOnly }
+func (f *servingFile) Seek(o int64, w int) (int64, error) { return f.reader.Seek(o, w) }
+func (f *servingFile) Close() error                       { return f.reader.Close() }
+func (f *servingFile) Stat() (os.FileInfo, error)         { return f.info, nil }
+func (f *servingFile) Readdir(int) ([]os.FileInfo, error) {
+	return nil, &os.PathError{Op: "readdir", Path: f.info.name, Err: errors.New("not a directory")}
+}
 
 func (fs *torrentFS) resolve(ctx context.Context, name string) (rec *storage.TorrentRecord, subPath string, idx *torrentIndex, err error) {
 	idx, err = fs.buildIndex(ctx)
@@ -261,7 +286,17 @@ func (fs *torrentFS) resolve(ctx context.Context, name string) (rec *storage.Tor
 	parts := strings.SplitN(p, "/", 2)
 	rec = idx.byFolder[parts[0]]
 	if rec == nil {
+		rec = idx.byAlias[strings.ToLower(parts[0])]
+	}
+	if rec == nil {
 		return nil, "", idx, os.ErrNotExist
+	}
+	full, err := fs.manager.Get(ctx, rec.ID)
+	if err == nil {
+		rec = full
+		if !torrent.IsCompletedStatus(rec.Status) {
+			return nil, "", idx, os.ErrNotExist
+		}
 	}
 	if len(parts) == 1 {
 		return rec, "", idx, nil
@@ -349,16 +384,25 @@ func (fs *torrentFS) OpenFile(ctx context.Context, name string, flag int, perm o
 	}
 
 	if f, ok := findFile(rec, subPath); ok {
-		rel := relativeDiskPath(rec, f, fs.manager.FilesDir())
-		diskPath, err := fs.manager.FilePath(rel)
+		reader, modTime, size, err := fs.manager.OpenServingReader(ctx, rec.ID, f.ID, torrent.StreamOptions{})
 		if err != nil {
 			return nil, err
 		}
-		file, err := os.Open(diskPath)
-		if err != nil {
-			return nil, err
+		if size <= 0 {
+			size = f.Bytes
 		}
-		return &readOnlyFile{File: file}, nil
+		if modTime.IsZero() {
+			modTime = torrentModTime(rec)
+		}
+		return &servingFile{
+			reader: reader,
+			info: fileInfo{
+				name:    path.Base(subPath),
+				size:    size,
+				mode:    0o444,
+				modTime: modTime,
+			},
+		}, nil
 	}
 
 	if isVirtualDir(rec, subPath) {
@@ -372,14 +416,4 @@ func (fs *torrentFS) OpenFile(ctx context.Context, name string, flag int, perm o
 	}
 
 	return nil, os.ErrNotExist
-}
-
-func relativeDiskPath(rec *storage.TorrentRecord, f *storage.TorrentFileRecord, filesDir string) string {
-	if f.DiskPath != "" && filesDir != "" {
-		rel, err := filepath.Rel(filesDir, f.DiskPath)
-		if err == nil && rel != "" && !strings.HasPrefix(rel, "..") {
-			return filepath.ToSlash(rel)
-		}
-	}
-	return path.Join(rec.InfoHash, path.Base(strings.ReplaceAll(f.Path, "\\", "/")))
 }

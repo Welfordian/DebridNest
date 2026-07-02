@@ -36,6 +36,31 @@ const ADMIN_NAV_ITEMS: { key: Tab; label: string; icon: string }[] = [
   { key: 'logs', label: 'Logs', icon: 'terminal' },
 ];
 
+const ADMIN_TABS = new Set<Tab>(ADMIN_NAV_ITEMS.map((item) => item.key));
+
+const ROUTES: Record<Tab, string> = {
+  overview: '/dashboard/',
+  torrents: '/dashboard/torrents',
+  library: '/dashboard/library',
+  settings: '/dashboard/settings',
+  users: '/dashboard/users',
+  activity: '/dashboard/activity',
+  logs: '/dashboard/logs',
+};
+
+const ROUTE_TABS = new Map<string, Tab>(
+  Object.entries(ROUTES).map(([tab, route]) => [route.replace(/\/+$/, '').toLowerCase(), tab as Tab]),
+);
+
+function tabFromLocation(pathname = window.location.pathname): Tab {
+  const clean = pathname.replace(/\/+$/, '').toLowerCase();
+  return ROUTE_TABS.get(clean) ?? 'overview';
+}
+
+function navigatePath(tab: Tab): string {
+  return ROUTES[tab];
+}
+
 function BrandMark({ large = false, subtitle }: { large?: boolean; subtitle?: string }) {
   return (
     <span className={large ? 'brand brand-lg' : 'brand'}>
@@ -137,7 +162,7 @@ function NavItem({
 export default function App() {
   const [authenticated, setAuthenticated] = useState(() => !!getToken());
   const [me, setMe] = useState<Me | null>(null);
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<Tab>(() => tabFromLocation());
   const [metaEl, setMetaEl] = useState<HTMLElement | null>(null);
   const [actionsEl, setActionsEl] = useState<HTMLElement | null>(null);
 
@@ -146,6 +171,15 @@ export default function App() {
     intervalMs: 15000,
     enabled: authenticated,
   });
+
+  useEffect(() => {
+    function handlePopState() {
+      setTab(tabFromLocation());
+    }
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   useEffect(() => {
     if (!authenticated) {
@@ -170,6 +204,22 @@ export default function App() {
     };
   }, [authenticated]);
 
+  function selectTab(next: Tab) {
+    setTab(next);
+    const path = navigatePath(next);
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, '', path);
+    }
+  }
+
+  function replaceTab(next: Tab) {
+    setTab(next);
+    const path = navigatePath(next);
+    if (window.location.pathname !== path) {
+      window.history.replaceState({}, '', path);
+    }
+  }
+
   function handleSignOut() {
     clearToken();
     setMe(null);
@@ -182,6 +232,12 @@ export default function App() {
   }
 
   const isAdmin = me?.admin ?? false;
+
+  useEffect(() => {
+    if (authenticated && me && !isAdmin && ADMIN_TABS.has(tab)) {
+      replaceTab('overview');
+    }
+  }, [authenticated, isAdmin, me, tab]);
 
   if (!authenticated) {
     return <LoginForm onLogin={handleLogin} />;
@@ -200,14 +256,14 @@ export default function App() {
               item={item}
               active={tab === item.key}
               count={item.key === 'torrents' ? stats?.torrentCount : undefined}
-              onSelect={setTab}
+              onSelect={selectTab}
             />
           ))}
           {isAdmin && (
             <>
               <div className="nav-section-label">Admin</div>
               {ADMIN_NAV_ITEMS.map((item) => (
-                <NavItem key={item.key} item={item} active={tab === item.key} onSelect={setTab} />
+                <NavItem key={item.key} item={item} active={tab === item.key} onSelect={selectTab} />
               ))}
             </>
           )}
@@ -234,7 +290,7 @@ export default function App() {
         </header>
         <main className="main">
           <TopBarContext.Provider value={{ metaEl, actionsEl }}>
-            {tab === 'overview' && <Overview onNavigate={setTab} />}
+            {tab === 'overview' && <Overview onNavigate={selectTab} />}
             {tab === 'torrents' && <Torrents />}
             {tab === 'library' && <Library />}
             {tab === 'settings' && <Settings isAdmin={isAdmin} />}

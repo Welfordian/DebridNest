@@ -80,6 +80,80 @@ func TestFilesDownloadedChangedIncludesStreamableBytes(t *testing.T) {
 	}
 }
 
+func TestSelectedCompletedCountsRemoteStoredFilesAsComplete(t *testing.T) {
+	manager, _ := testManager(t)
+	rec := &storage.TorrentRecord{
+		Files: []storage.TorrentFileRecord{
+			{ID: 1, Selected: true, Bytes: 100, DownloadedBytes: 20, ObjectKey: "remote/movie.mkv", RemoteStored: true},
+			{ID: 2, Selected: true, Bytes: 50, DownloadedBytes: 25},
+			{ID: 3, Selected: false, Bytes: 100, DownloadedBytes: 100},
+		},
+	}
+
+	if got, want := manager.selectedCompleted(rec), int64(125); got != want {
+		t.Fatalf("selectedCompleted = %d, want %d", got, want)
+	}
+}
+
+func TestReconcileRemoteStoredCompleteMarksDownloaded(t *testing.T) {
+	manager, db := testManager(t)
+	ctx := context.Background()
+
+	rec := storage.TorrentRecord{
+		ID:       "REMOTE_DONE",
+		InfoHash: "abababababababababababababababababababab",
+		Magnet:   "magnet:?xt=urn:btih:abababababababababababababababababababab",
+		Name:     "remote movie",
+		Status:   string(StatusDownloading),
+		Progress: 58,
+		Bytes:    100,
+		AddedAt:  time.Now().UTC(),
+		Files: []storage.TorrentFileRecord{
+			{
+				ID:              1,
+				TorrentID:       "REMOTE_DONE",
+				Path:            "/movie.mkv",
+				Bytes:           100,
+				Selected:        true,
+				DownloadedBytes: 58,
+				StreamableBytes: 32,
+				ObjectKey:       "remote/movie.mkv",
+				RemoteStored:    true,
+			},
+		},
+	}
+	if err := db.CreateTorrent(ctx, rec); err != nil {
+		t.Fatalf("create torrent: %v", err)
+	}
+
+	if !manager.reconcileRemoteStoredComplete(ctx, &rec) {
+		t.Fatal("expected reconcile to mark remote-stored torrent complete")
+	}
+
+	after, err := db.GetTorrent(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("get torrent: %v", err)
+	}
+	if after.Status != string(StatusDownloaded) {
+		t.Fatalf("status = %q, want downloaded", after.Status)
+	}
+	if after.Progress != 100 {
+		t.Fatalf("progress = %d, want 100", after.Progress)
+	}
+	if after.EndedAt == nil {
+		t.Fatal("ended_at was not set")
+	}
+	if got := after.Files[0].DownloadedBytes; got != after.Files[0].Bytes {
+		t.Fatalf("downloaded bytes = %d, want %d", got, after.Files[0].Bytes)
+	}
+	if got := after.Files[0].StreamableBytes; got != after.Files[0].Bytes {
+		t.Fatalf("streamable bytes = %d, want %d", got, after.Files[0].Bytes)
+	}
+	if len(after.Links) != 1 {
+		t.Fatalf("links = %d, want 1", len(after.Links))
+	}
+}
+
 func TestEnsureHostLinksOnlyIncludesReadyIncompleteFiles(t *testing.T) {
 	manager, db := testManager(t)
 	ctx := context.Background()

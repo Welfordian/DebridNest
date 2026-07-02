@@ -16,7 +16,10 @@ import { basename, formatBytes, formatRelativeTime } from '../lib/format';
 import { torrentLifecycle } from '../lib/torrentLifecycle';
 
 function webdavPath(hash: string, filePath: string): string {
-  return `/${hash}/${basename(filePath)}`;
+  const cleanHash = hash.trim().toLowerCase();
+  const cleanPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
+  return `/${encodeURIComponent(cleanHash)}/${encodedPath}`;
 }
 
 function FileRow({

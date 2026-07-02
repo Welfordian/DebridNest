@@ -1641,7 +1641,7 @@ th.num-cell {
 }
 
 .modal-wide {
-  max-width: 760px;
+  max-width: min(860px, calc(100vw - 32px));
 }
 
 .modal-header {
@@ -1695,8 +1695,49 @@ th.num-cell {
 
 .detail-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: minmax(104px, 0.7fr) minmax(128px, 0.8fr) minmax(240px, 1.6fr) minmax(112px, 0.7fr);
+  gap: 12px;
+}
+
+.detail-stat {
+  display: flex;
+  min-width: 0;
+  min-height: 86px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 42%), var(--bg-1);
+}
+
+.detail-stat-label {
+  font-size: var(--text-2xs);
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  font-weight: var(--weight-medium);
+}
+
+.detail-stat-value {
+  min-width: 0;
+  color: var(--text-1);
+  font-size: var(--text-lg);
+  line-height: 1.15;
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-stat-code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0;
 }
 
 .detail-section {
@@ -1728,9 +1769,8 @@ th.num-cell {
 
 .detail-file-list li,
 .detail-link-list li {
-  display: flex;
+  display: grid;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
   padding: 0.65rem 0.75rem;
   border-radius: var(--radius-sm);
@@ -1739,10 +1779,17 @@ th.num-cell {
   min-width: 0;
 }
 
+.detail-file-list li {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.detail-link-list li {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
 .detail-file-list li span:first-child {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  word-break: break-all;
 }
 
 .detail-file-main {
@@ -1763,7 +1810,9 @@ th.num-cell {
 
 .detail-file-path {
   font-size: var(--text-2xs);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-file-meta {
@@ -1775,6 +1824,28 @@ th.num-cell {
   flex-wrap: wrap;
   color: var(--text-2);
   font-size: var(--text-xs);
+}
+
+.detail-file-size {
+  min-width: 84px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.detail-link-list .url-value {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.detail-copy-button {
+  min-width: 78px;
+  justify-content: center;
 }
 
 /* ============ Toasts ============ */
@@ -1879,6 +1950,10 @@ th.num-cell {
   .detail-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .detail-stat-hash {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1924,5 +1999,28 @@ th.num-cell {
   .lifecycle-summary,
   .detail-summary {
     grid-template-columns: 1fr;
+  }
+
+  .detail-stat-hash {
+    grid-column: auto;
+  }
+
+  .detail-file-list li,
+  .detail-link-list li {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .detail-file-meta {
+    justify-content: flex-start;
+  }
+
+  .detail-file-size {
+    min-width: 0;
+    text-align: left;
+  }
+
+  .detail-copy-button {
+    width: 100%;
   }
 }

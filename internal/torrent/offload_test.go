@@ -148,6 +148,69 @@ func TestStoreEarlyOffloadFlag(t *testing.T) {
 	}
 }
 
+func TestEarlyOffloadDoesNotRemoveAlreadyRemoteLocalFile(t *testing.T) {
+	manager, _ := testManager(t)
+	ctx := context.Background()
+	localPath := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(localPath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	rec := storage.TorrentRecord{
+		ID:       "OFFLOAD_EARLY",
+		InfoHash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		Files: []storage.TorrentFileRecord{
+			{
+				ID:           1,
+				TorrentID:    "OFFLOAD_EARLY",
+				Path:         "/movie.mkv",
+				Bytes:        4,
+				Selected:     true,
+				DiskPath:     localPath,
+				ObjectKey:    "remote/movie.mkv",
+				RemoteStored: true,
+			},
+		},
+	}
+
+	manager.offloadFiles(ctx, nil, &rec, false)
+
+	if _, err := os.Stat(localPath); err != nil {
+		t.Fatalf("early offload removed local file: %v", err)
+	}
+}
+
+func TestCompletedOffloadRemovesAlreadyRemoteLocalFile(t *testing.T) {
+	manager, _ := testManager(t)
+	ctx := context.Background()
+	localPath := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(localPath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	rec := storage.TorrentRecord{
+		ID:       "OFFLOAD_DONE",
+		InfoHash: "ffffffffffffffffffffffffffffffffffffffff",
+		Files: []storage.TorrentFileRecord{
+			{
+				ID:           1,
+				TorrentID:    "OFFLOAD_DONE",
+				Path:         "/movie.mkv",
+				Bytes:        4,
+				Selected:     true,
+				DiskPath:     localPath,
+				ObjectKey:    "remote/movie.mkv",
+				RemoteStored: true,
+			},
+		},
+	}
+
+	manager.offloadFiles(ctx, nil, &rec, true)
+
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Fatalf("completed offload local file exists or unexpected error: %v", err)
+	}
+}
 
 func TestGetTorrentFileByRelativePath(t *testing.T) {
 	manager, db := testManager(t)
